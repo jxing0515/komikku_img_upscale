@@ -414,6 +414,13 @@ int Waifu2x::process_gpu(const ncnn::Mat &packed_input, void *out_pixels,
   int batch_size = 0;
   int completed_tiles = 0;
   ncnn::VkCompute command(vkdev);
+  // KMK --> Every early return (abort/tile error) used to leave recorded-but-unsubmitted commands
+  // in VkCompute; the next process call then blocked forever in submit_and_wait. Always reset.
+  struct CommandResetGuard {
+    ncnn::VkCompute &c;
+    ~CommandResetGuard() { c.reset(); }
+  } command_reset_guard{command};
+  // KMK <--
   std::vector<ncnn::VkMat> retained_mats;
   retained_mats.reserve(batch_capacity);
 
