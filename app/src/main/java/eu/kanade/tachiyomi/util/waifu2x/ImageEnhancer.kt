@@ -360,7 +360,9 @@ object ImageEnhancer {
 
     fun cancel(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = "") {
         val requestKey = requestKey(mangaId, chapterId, pageIndex, pageVariant)
-        if (pendingRequests.remove(requestKey) != null) {
+        // Remove only the generation observed here: a newer request for the same page must survive.
+        val pendingGeneration = pendingRequests[requestKey]
+        if (pendingGeneration != null && pendingRequests.remove(requestKey, pendingGeneration)) {
             val removed = queue.removeIf {
                 it.mangaId == mangaId && it.chapterId == chapterId && it.pageIndex == pageIndex && it.pageVariant == pageVariant
             }

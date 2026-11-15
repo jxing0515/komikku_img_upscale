@@ -336,10 +336,6 @@ class ReaderActivity : BaseActivity() {
                 }
             }
             .launchIn(lifecycleScope)
-
-        if (readerPreferences.waifu2xEnabled().get()) {
-            Waifu2x.init(this, readerPreferences.waifu2xNoiseLevel().get())
-        }
         // KMK <--
     }
 

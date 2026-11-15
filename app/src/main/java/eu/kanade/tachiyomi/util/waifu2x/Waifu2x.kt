@@ -41,6 +41,11 @@ object Waifu2x {
 
     @Volatile private var isW2xExInitialized = false
 
+    // Asset paths whose remote model download was already attempted in this process. Downloads
+    // run on the single enhancement worker, so a stalled connection would block every page.
+    private val downloadAttempts: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
     init {
         try {
             System.loadLibrary("waifu2x-jni")
@@ -72,25 +77,6 @@ object Waifu2x {
             }
             isInitialized
         }
-    }
-
-    /**
-     * Process a bitmap image with Waifu2x upscaling.
-     *
-     * @param input Input bitmap (will not be modified)
-     * @return Upscaled bitmap, or null if processing failed
-     */
-    fun process(input: Bitmap, id: Int = -1): Bitmap? {
-        if (!isInitialized) return null
-
-        // Ensure input is in ARGB_8888 format
-        val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
-            input.copy(Bitmap.Config.ARGB_8888, false)
-        } else {
-            input
-        }
-
-        return nativeProcess(argbBitmap, id)
     }
 
     // Track current config to detect changes (excludes tileSleepMs since that doesn't require model reload)
@@ -652,7 +638,12 @@ object Waifu2x {
         val names = mutableListOf<String>()
 
         fun addShader(name: String) {
-            val content = assetManager.open("anime4k/$name").bufferedReader().use { it.readText() }
+            // Bundled shaders live flat in assets/, but keep the anime4k/ subdirectory working too.
+            val content = try {
+                assetManager.open("anime4k/$name")
+            } catch (_: java.io.IOException) {
+                assetManager.open(name)
+            }.bufferedReader().use { it.readText() }
             shaders.add(content)
             names.add(name)
         }
@@ -737,12 +728,11 @@ object Waifu2x {
                 assetVersionFile.writeText(BUNDLED_MODEL_CACHE_VERSION)
             }
 
-            if (!cacheDir.hasNcnnModels()) {
+            if (!cacheDir.hasNcnnModels() && downloadAttempts.add(assetPath)) {
                 downloadReleaseModels(assetPath, cacheDir)
-            }
-
-            if (!cacheDir.hasNcnnModels()) {
-                downloadDirectModels(assetPath, cacheDir)
+                if (!cacheDir.hasNcnnModels()) {
+                    downloadDirectModels(assetPath, cacheDir)
+                }
             }
 
             if (!cacheDir.hasNcnnModels()) {

@@ -132,6 +132,15 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
 
                     // Check cache first
                     var usedCache = false
+                    // Terminal failures (unsupported backend, missing model, disk full) are recorded
+                    // so the same page is not decoded and re-enhanced over and over.
+                    val enhancementFailed = ImageEnhancementCache.isFailed(
+                        mangaId,
+                        chapterId,
+                        pageIndex,
+                        configHash,
+                        pageVariant,
+                    )
                     val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant)
                     if (cachedFile != null) {
                         logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant found in cache: ${cachedFile.absolutePath}" }
@@ -151,7 +160,7 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                         }
                     }
 
-                    if (!usedCache) {
+                    if (!usedCache && !enhancementFailed) {
                         logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant NOT in cache or decode failed, processing..." }
                         // Not in cache or decode failed, perform enhancement on-the-fly
                         try {
@@ -311,20 +320,32 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                             if (queued) {
                                                 logcat(LogPriority.DEBUG) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant queued for cache encoding" }
                                             } else {
+                                                // Not a failure: another request for this page already queued the same
+                                                // bitmap for encoding, and the cache hit above wins once it lands.
                                                 logcat(LogPriority.WARN) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant cache encoding already pending or rejected" }
                                             }
                                         } else {
                                             logcat(LogPriority.ERROR) { "TachiyomiImageDecoder: Page $pageIndex/$pageVariant produced a nearly transparent result, keeping original image" }
+                                            ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
                                         }
                                     } finally {
                                         if (ownsResult && result !== bitmap && !result.isRecycled) result.recycle()
                                     }
+                                } else {
+                                    // KMK --> Terminal failure marker: without it the reader polling loop
+                                    // re-enqueues this page every 500ms until it leaves the preload window.
+                                    logcat(LogPriority.WARN) {
+                                        "TachiyomiImageDecoder: Page $pageIndex/$pageVariant could not be enhanced (init=$initialized), keeping original"
+                                    }
+                                    ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
+                                    // KMK <--
                                 }
                             }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
                             logcat(LogPriority.ERROR, e) { "TachiyomiImageDecoder: Failed to enhance image on-the-fly" }
+                            ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
                         }
                     }
                 }

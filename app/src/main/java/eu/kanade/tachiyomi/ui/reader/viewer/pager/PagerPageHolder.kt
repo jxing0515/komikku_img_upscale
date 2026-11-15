@@ -320,7 +320,11 @@ class PagerPageHolder(
         ) ?: return null
 
         val bitmap1 = decodeEnhancedBitmap(firstFile) ?: return null
-        val bitmap2 = decodeEnhancedBitmap(secondFile) ?: return null
+        val bitmap2 = decodeEnhancedBitmap(secondFile)
+        if (bitmap2 == null) {
+            bitmap1.recycle()
+            return null
+        }
         try {
             val isLTR = (viewer !is R2LPagerViewer) xor viewer.config.invertDoublePages
             // Scale the center margin by the upscale factor so the physical gap stays constant
@@ -416,7 +420,8 @@ class PagerPageHolder(
         if (mId == -1L || cId == -1L) return
         val views = ensureEnhancementStatusViews() ?: return
         val (firstView, secondView) = views
-        enhancementStatusJob = scope.launch {
+        // Cache lookups hit the filesystem, so keep the polling loop off the main thread.
+        enhancementStatusJob = scope.launchIO {
             var attempts = 0
             // Cancellation is delivered via `delay`, so the loop exits on detach.
             while (attempts < 240) {
@@ -434,12 +439,14 @@ class PagerPageHolder(
                     }
                 }
                 val firstDone = ImageEnhancementCache.getCachedImage(mId, cId, page.index, configHash, page.enhancementKeySuffix) != null ||
-                    ImageEnhancementCache.isSkipped(mId, cId, page.index, configHash, page.enhancementKeySuffix)
+                    ImageEnhancementCache.isSkipped(mId, cId, page.index, configHash, page.enhancementKeySuffix) ||
+                    ImageEnhancementCache.isFailed(mId, cId, page.index, configHash, page.enhancementKeySuffix)
                 val secondDone = ImageEnhancementCache.getCachedImage(mId, cId, second.index, configHash, second.enhancementKeySuffix) != null ||
-                    ImageEnhancementCache.isSkipped(mId, cId, second.index, configHash, second.enhancementKeySuffix)
+                    ImageEnhancementCache.isSkipped(mId, cId, second.index, configHash, second.enhancementKeySuffix) ||
+                    ImageEnhancementCache.isFailed(mId, cId, second.index, configHash, second.enhancementKeySuffix)
                 if (firstDone && secondDone) {
                     // Both pages finished: keep showing the final status (no stay delay, no hide).
-                    return@launch
+                    return@launchIO
                 }
                 delay(500)
                 attempts++
@@ -452,6 +459,8 @@ class PagerPageHolder(
             ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null ->
                 context.stringResource(KMR.strings.reader_status_processed)
             ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant) ->
+                context.stringResource(KMR.strings.reader_status_raw)
+            ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant) ->
                 context.stringResource(KMR.strings.reader_status_raw)
             Waifu2x.getProgressId() == index -> {
                 val rawProgress = Waifu2x.getProgressPercent()

@@ -674,8 +674,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
         highPriority: Boolean,
         streamFn: (() -> java.io.InputStream)? = null,
         originalData: Any? = null,
-    ) {
-        val dataProvider = buildEnhancementDataProvider(streamFn, originalData) ?: return
+    ): Boolean {
+        // Returns false when the page has no usable source, so callers can stop retrying.
+        val dataProvider = buildEnhancementDataProvider(streamFn, originalData) ?: return false
         ImageEnhancer.enhanceLazy(
             context = context.applicationContext,
             mangaId = mId,
@@ -685,6 +686,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             pageVariant = enhancementVariant(),
             dataProvider = dataProvider,
         )
+        return true
     }
 
     fun promoteEnhancementRequest(highPriority: Boolean = true) {
@@ -714,6 +716,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
         if (ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant) != null) return
         if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) return
+        if (ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)) return
 
         enqueueEnhancement(mId, cId, pIdx, highPriority)
     }
@@ -854,7 +857,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     } else {
                         updateStatus(context.stringResource(KMR.strings.reader_status_processed))
                     }
-                } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                } else if (
+                    ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
+                    ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
+                ) {
                     updateStatus(context.stringResource(KMR.strings.reader_status_raw))
                 } else {
                     // Not in cache, not skipped - ensure it's being processed with high priority
@@ -1240,8 +1246,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
             return
         }
 
-        if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
-            logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx marked as skipped, showing RAW" }
+        if (
+            ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
+            ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
+        ) {
+            logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx marked as skipped/failed, showing RAW" }
             updateStatus(context.stringResource(KMR.strings.reader_status_raw))
             return
         }
@@ -1298,7 +1307,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 var attempts = 0
                 var wasEnhancing = false
                 while (attempts < 120 && isActive) {
-                    if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                    if (
+                        ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
+                        ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
+                    ) {
                         withUIContext { updateStatus(context.stringResource(KMR.strings.reader_status_raw)) }
                         return@launchIO
                     }
@@ -1365,10 +1377,27 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         // Not in queue, not cached - might need to re-enqueue
                         val current = currentGlobalPageIndex
                         val shouldHeal = pIdx >= current && pIdx <= current + preloadSize
-                        if (shouldHeal && !ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                        if (
+                            shouldHeal &&
+                            !ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) &&
+                            !ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
+                        ) {
                             logcat(LogPriority.WARN) { "ReaderPageImageView: Polling re-enqueue page $pIdx/$pageVariant (cur=$current)" }
                             val isCurrent = pIdx == current
-                            enqueueEnhancement(mId, cId, pIdx, highPriority = isCurrent, originalData = originalData, streamFn = streamFn)
+                            val requeued = enqueueEnhancement(
+                                mId,
+                                cId,
+                                pIdx,
+                                highPriority = isCurrent,
+                                originalData = originalData,
+                                streamFn = streamFn,
+                            )
+                            if (!requeued) {
+                                // No usable source for this page: stop polling instead of retrying.
+                                updateStatus(context.stringResource(KMR.strings.reader_status_raw))
+                                delay(2000)
+                                return@launchIO
+                            }
                         } else {
                             updateStatus(context.stringResource(KMR.strings.reader_status_raw))
                             delay(2000)

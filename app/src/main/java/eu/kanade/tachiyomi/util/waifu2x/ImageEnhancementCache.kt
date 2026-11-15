@@ -68,21 +68,28 @@ object ImageEnhancementCache {
     }
 
     /**
-     * Get the cache directory for a specific manga and chapter
+     * Cache directory for a specific manga and chapter. Never creates it: this runs on hot
+     * read paths (status polling, cache lookups) where mkdirs() would be wasted I/O.
      */
-    private fun getChapterDir(mangaId: Long, chapterId: Long): File {
-        val mangaDir = File(cacheDir, mangaId.toString())
-        if (!mangaDir.exists()) mangaDir.mkdirs()
-        val chapterDir = File(mangaDir, chapterId.toString())
-        if (!chapterDir.exists()) chapterDir.mkdirs()
-        return chapterDir
+    private fun getChapterDir(mangaId: Long, chapterId: Long): File? {
+        val root = cacheDir ?: return null
+        return File(File(root, mangaId.toString()), chapterId.toString())
+    }
+
+    /**
+     * Same as [getChapterDir], but creates the directory. Only for writers.
+     */
+    private fun ensureChapterDir(mangaId: Long, chapterId: Long): File? {
+        return getChapterDir(mangaId, chapterId)?.apply {
+            if (!exists()) mkdirs()
+        }
     }
 
     /**
      * Get cached file if it exists
      */
     fun getCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): File? {
-        val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant))
+        val file = File(getChapterDir(mangaId, chapterId) ?: return null, getFilename(pageIndex, configHash, pageVariant))
         return if (file.exists()) file else null
     }
 
@@ -98,7 +105,8 @@ object ImageEnhancementCache {
      */
     fun removeCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
         return try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant))
+            val dir = getChapterDir(mangaId, chapterId) ?: return false
+            val file = File(dir, getFilename(pageIndex, configHash, pageVariant))
             val tempFile = File(file.parent, "${file.name}.tmp")
             val removedFile = !file.exists() || file.delete()
             val removedTemp = !tempFile.exists() || tempFile.delete()
@@ -111,7 +119,8 @@ object ImageEnhancementCache {
 
     fun removeSkipMarker(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
         return try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip")
+            val dir = getChapterDir(mangaId, chapterId) ?: return false
+            val file = File(dir, getFilename(pageIndex, configHash, pageVariant) + ".skip")
             !file.exists() || file.delete()
         } catch (e: Exception) {
             android.util.Log.e("ImageEnhancementCache", "Failed to remove skip marker for page $pageIndex", e)
@@ -127,7 +136,7 @@ object ImageEnhancementCache {
             if (!bitmap.isRecycled) bitmap.recycle()
             return false
         }
-        val key = pendingSaveKey(mangaId, chapterId, pageIndex, pageVariant)
+        val key = pendingSaveKey(mangaId, chapterId, pageIndex, configHash, pageVariant)
         val generation = cacheGeneration.get()
         if (pendingSaveKeys.putIfAbsent(key, generation) != null) {
             if (!bitmap.isRecycled) bitmap.recycle()
@@ -155,7 +164,8 @@ object ImageEnhancementCache {
     }
 
     fun isSavePending(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = ""): Boolean {
-        return pendingSaveKeys.containsKey(pendingSaveKey(mangaId, chapterId, pageIndex, pageVariant))
+        val identity = pageIdentity(mangaId, chapterId, pageIndex, pageVariant)
+        return pendingSaveKeys.keys.any { it.startsWith("$identity|") }
     }
 
     private fun writeToCache(request: SaveRequest): File? {
@@ -167,20 +177,35 @@ object ImageEnhancementCache {
         }
 
         try {
+            val dir = ensureChapterDir(request.mangaId, request.chapterId) ?: return null
             val file = File(
-                getChapterDir(request.mangaId, request.chapterId),
+                dir,
                 getFilename(request.pageIndex, request.configHash, request.pageVariant),
             )
             val tempFile = File(file.parent, "${file.name}.tmp")
 
-            FileOutputStream(tempFile).use { out ->
+            // Lossy WebP drops the alpha channel, which would turn transparent manga pages black.
+            val format = if (hasTransparency(bitmap)) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 90, out)
+                    Bitmap.CompressFormat.WEBP_LOSSLESS
                 } else {
-                    @Suppress("DEPRECATION")
-                    bitmap.compress(Bitmap.CompressFormat.WEBP, 90, out)
+                    Bitmap.CompressFormat.PNG
                 }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Bitmap.CompressFormat.WEBP_LOSSY
+            } else {
+                @Suppress("DEPRECATION")
+                Bitmap.CompressFormat.WEBP
+            }
+
+            val written = FileOutputStream(tempFile).use { out ->
+                val ok = bitmap.compress(format, 90, out)
                 out.flush()
+                ok
+            }
+            if (!written) {
+                tempFile.delete()
+                return null
             }
 
             if (request.generation != cacheGeneration.get()) {
@@ -200,15 +225,24 @@ object ImageEnhancementCache {
         }
     }
 
-    fun isDisplayable(bitmap: Bitmap): Boolean {
-        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return false
-        if (!bitmap.hasAlpha()) return true
+    private class AlphaSample(
+        val total: Int,
+        val visible: Int,
+        val alphaSum: Long,
+        val sawTransparent: Boolean,
+    )
 
+    /**
+     * Alpha statistics from a 24x24 grid of the bitmap. Cheap enough for the save path and shared by
+     * [hasTransparency] and [isDisplayable].
+     */
+    private fun sampleAlpha(bitmap: Bitmap): AlphaSample {
         val stepX = (bitmap.width / 24).coerceAtLeast(1)
         val stepY = (bitmap.height / 24).coerceAtLeast(1)
         var total = 0
         var visible = 0
         var alphaSum = 0L
+        var sawTransparent = false
 
         var y = 0
         while (y < bitmap.height) {
@@ -216,15 +250,31 @@ object ImageEnhancementCache {
             while (x < bitmap.width) {
                 val alpha = bitmap.getPixel(x, y) ushr 24
                 if (alpha > 16) visible++
+                if (alpha != 255) sawTransparent = true
                 alphaSum += alpha.toLong()
                 total++
                 x += stepX
             }
             y += stepY
         }
+        return AlphaSample(total, visible, alphaSum, sawTransparent)
+    }
 
-        if (total == 0) return false
-        return visible > total / 20 || alphaSum / total > 32
+    /**
+     * Lossy WebP drops the alpha channel, which would turn transparent manga pages black. ARGB_8888
+     * bitmaps report [Bitmap.hasAlpha] even when fully opaque, so sample instead of trusting it.
+     */
+    private fun hasTransparency(bitmap: Bitmap): Boolean {
+        return bitmap.hasAlpha() && sampleAlpha(bitmap).sawTransparent
+    }
+
+    fun isDisplayable(bitmap: Bitmap): Boolean {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return false
+        if (!bitmap.hasAlpha()) return true
+
+        val sample = sampleAlpha(bitmap)
+        if (sample.total == 0) return false
+        return sample.visible > sample.total / 20 || sample.alphaSum / sample.total > 32
     }
 
     /**
@@ -232,7 +282,8 @@ object ImageEnhancementCache {
      */
     fun saveSkippedToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = "") {
         try {
-            val file = File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip")
+            val dir = ensureChapterDir(mangaId, chapterId) ?: return
+            val file = File(dir, getFilename(pageIndex, configHash, pageVariant) + ".skip")
             if (!file.exists()) {
                 file.createNewFile()
             }
@@ -245,14 +296,38 @@ object ImageEnhancementCache {
      * Check if a page was marked as skipped in the cache
      */
     fun isSkipped(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
-        return File(getChapterDir(mangaId, chapterId), getFilename(pageIndex, configHash, pageVariant) + ".skip").exists()
+        val dir = getChapterDir(mangaId, chapterId) ?: return false
+        return File(dir, getFilename(pageIndex, configHash, pageVariant) + ".skip").exists()
+    }
+
+    /**
+     * Mark a page as failed so it is not decoded and re-enhanced over and over. Without this the
+     * reader polling loop re-enqueues a page that can never produce a cache entry (unsupported
+     * Vulkan, missing model, disk full, transparent result) for as long as it stays in the
+     * preload window.
+     */
+    fun saveFailedToCache(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = "") {
+        try {
+            val dir = ensureChapterDir(mangaId, chapterId) ?: return
+            val file = File(dir, getFilename(pageIndex, configHash, pageVariant) + ".fail")
+            if (!file.exists()) {
+                file.createNewFile()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImageEnhancementCache", "Failed to save failure marker", e)
+        }
+    }
+
+    fun isFailed(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
+        val dir = getChapterDir(mangaId, chapterId) ?: return false
+        return File(dir, getFilename(pageIndex, configHash, pageVariant) + ".fail").exists()
     }
 
     /**
      * Clear old cache files including skip markers
      */
     fun clearOldCache(mangaId: Long, chapterId: Long, currentPage: Int, keepRange: Int = 5) {
-        getChapterDir(mangaId, chapterId).listFiles()?.forEach { file ->
+        getChapterDir(mangaId, chapterId)?.listFiles()?.forEach { file ->
             try {
                 // filename format: pageIndex_configHash.webp
                 val name = file.name
@@ -283,8 +358,18 @@ object ImageEnhancementCache {
         cacheDir?.mkdirs()
     }
 
-    private fun pendingSaveKey(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String): String {
-        return "${mangaId}_${chapterId}_${pageIndex}_$pageVariant"
+    private fun pendingSaveKey(
+        mangaId: Long,
+        chapterId: Long,
+        pageIndex: Int,
+        configHash: String,
+        pageVariant: String,
+    ): String {
+        return "${pageIdentity(mangaId, chapterId, pageIndex, pageVariant)}|$configHash"
+    }
+
+    private fun pageIdentity(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String): String {
+        return "$mangaId|$chapterId|$pageIndex|$pageVariant"
     }
 
     private fun getFilename(pageIndex: Int, configHash: String, pageVariant: String = ""): String {
@@ -354,7 +439,7 @@ object ImageEnhancementCache {
     fun clearChapterCache(mangaId: Long, chapterId: Long) {
         try {
             val chapterDir = getChapterDir(mangaId, chapterId)
-            if (chapterDir.exists()) {
+            if (chapterDir?.exists() == true) {
                 chapterDir.deleteRecursively()
                 android.util.Log.d("ImageEnhancementCache", "Cleared cache for manga $mangaId, chapter $chapterId")
             }
