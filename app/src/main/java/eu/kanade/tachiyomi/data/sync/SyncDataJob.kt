@@ -53,18 +53,26 @@ class SyncDataJob(private val context: Context, workerParams: WorkerParameters) 
         setForegroundSafely()
 
         return try {
-            SyncManager(context).syncData()
-            Result.success()
+            // KMK --> A finished-but-failed sync must not be reported as success.
+            if (SyncManager(context).syncData()) {
+                Result.success()
+            } else {
+                failedResult()
+            }
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e)
             notifier.showSyncError(e.message)
-            Result.success() // try again next time
+            failedResult()
         } finally {
             // KMK -->
             syncStatus.stop()
             // KMK <--
         }
     }
+
+    // KMK -->
+    private fun failedResult(): Result = if (tags.contains(TAG_AUTO)) Result.retry() else Result.failure()
+    // KMK <--
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
         return ForegroundInfo(

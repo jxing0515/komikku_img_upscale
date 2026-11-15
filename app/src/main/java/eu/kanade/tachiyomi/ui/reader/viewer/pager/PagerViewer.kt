@@ -46,6 +46,13 @@ abstract class PagerViewer(
 
     val scope = MainScope()
 
+    // KMK -->
+    // A wide offscreen window keeps more holders attached, which makes the pager land on a
+    // neighbouring chapter when the item list is rebuilt on a chapter change.
+    private val offscreenLimit: Int
+        get() = if (preferences.realCuganEnabled().get()) preferences.realCuganPreloadSize().get().coerceIn(1, 2) else 1
+    // KMK <--
+
     /**
      * View pager used by this viewer. It's abstract to implement L2R, R2L and vertical pagers on
      * top of this class.
@@ -118,7 +125,7 @@ abstract class PagerViewer(
         pager.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         pager.isFocusable = false
         // KMK -->
-        pager.offscreenPageLimit = if (preferences.realCuganEnabled().get()) preferences.realCuganPreloadSize().get() else 1
+        pager.offscreenPageLimit = offscreenLimit
         // KMK <--
         pager.id = R.id.reader_pager
         pager.adapter = adapter
@@ -432,7 +439,7 @@ abstract class PagerViewer(
     private fun refreshAdapter() {
         val currentItem = pager.currentItem
         // KMK -->
-        pager.offscreenPageLimit = if (preferences.realCuganEnabled().get()) preferences.realCuganPreloadSize().get() else 1
+        pager.offscreenPageLimit = offscreenLimit
         // KMK <--
         adapter.refresh()
         pager.adapter = adapter

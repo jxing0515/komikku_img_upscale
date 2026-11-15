@@ -71,8 +71,11 @@ class SyncManager(
      *
      * This function retrieves local data (favorites, manga, extensions, and categories)
      * from the database using the BackupManager, then synchronizes the data with a sync service.
+     *
+     * Returns false when the sync did not complete, so the caller can retry instead of
+     * reporting success.
      */
-    suspend fun syncData() {
+    suspend fun syncData(): Boolean {
         // Reset isSyncing in case it was left over or failed syncing during restore.
         handler.await(inTransaction = true) {
             mangasQueries.resetIsSyncing()
@@ -156,9 +159,11 @@ class SyncManager(
         val remoteBackup = syncService?.doSync(syncData)
 
         if (remoteBackup == null) {
-            logcat(LogPriority.DEBUG) { "Skip restore due to network issues" }
-            // should we call showSyncError?
-            return
+            // KMK --> The service already posted its own error notification; report the failure
+            // instead of ending as a successful run.
+            logcat(LogPriority.ERROR) { "Sync failed: no result from remote service" }
+            return false
+            // KMK <--
         }
 
         if (remoteBackup === syncData.backup) {
@@ -166,13 +171,13 @@ class SyncManager(
             logcat(LogPriority.DEBUG) { "Skip restore due to remote was overwrite from local" }
             syncPreferences.lastSyncTimestamp().set(Date().time)
             notifier.showSyncSuccess("Sync completed successfully")
-            return
+            return true
         }
 
         // Stop the sync early if the remote backup is null or empty
         if (remoteBackup.backupManga.isEmpty()) {
             notifier.showSyncError("No data found on remote server.")
-            return
+            return true
         }
 
         // Check if it's first sync based on lastSyncTimestamp
@@ -180,7 +185,7 @@ class SyncManager(
             // It's first sync no need to restore data. (just update remote data)
             syncPreferences.lastSyncTimestamp().set(Date().time)
             notifier.showSyncSuccess("Updated remote data successfully")
-            return
+            return true
         }
 
         val (filteredFavorites, nonFavorites) = filterFavoritesAndNonFavorites(remoteBackup)
@@ -208,7 +213,7 @@ class SyncManager(
             // update the sync timestamp
             syncPreferences.lastSyncTimestamp().set(Date().time)
             notifier.showSyncSuccess("Sync completed successfully")
-            return
+            return true
         }
 
         val backupUri = writeSyncDataToCache(context, newSyncData)
@@ -230,7 +235,11 @@ class SyncManager(
             syncPreferences.lastSyncTimestamp().set(Date().time)
         } else {
             logcat(LogPriority.ERROR) { "Failed to write sync data to file" }
+            // KMK --> Nothing was uploaded/restored, so this run must not look successful.
+            return false
+            // KMK <--
         }
+        return true
     }
 
     private fun writeSyncDataToCache(context: Context, backup: Backup): Uri? {

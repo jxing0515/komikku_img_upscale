@@ -20,6 +20,7 @@ import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import logcat.LogPriority
@@ -334,10 +335,18 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                                 } else {
                                     // KMK --> Terminal failure marker: without it the reader polling loop
                                     // re-enqueues this page every 500ms until it leaves the preload window.
-                                    logcat(LogPriority.WARN) {
-                                        "TachiyomiImageDecoder: Page $pageIndex/$pageVariant could not be enhanced (init=$initialized), keeping original"
+                                    // Only for real failures: a preempted/cancelled request also yields a
+                                    // null result and must stay retryable.
+                                    if (currentCoroutineContext().isActive) {
+                                        logcat(LogPriority.WARN) {
+                                            "TachiyomiImageDecoder: Page $pageIndex/$pageVariant could not be enhanced (init=$initialized), keeping original"
+                                        }
+                                        ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
+                                    } else {
+                                        logcat(LogPriority.DEBUG) {
+                                            "TachiyomiImageDecoder: Page $pageIndex/$pageVariant enhancement cancelled, not marking failed"
+                                        }
                                     }
-                                    ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
                                     // KMK <--
                                 }
                             }

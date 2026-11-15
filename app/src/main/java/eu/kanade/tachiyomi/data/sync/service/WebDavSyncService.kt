@@ -100,8 +100,11 @@ class WebDavSyncService(
     }
 
     override suspend fun doSync(syncData: SyncData): Backup? {
-        ensureFolderExists()
         try {
+            // KMK --> Inside the try: a failing MKCOL used to escape this handler and skip the
+            // "no result" reporting the caller relies on.
+            ensureFolderExists()
+            // KMK <--
             val (remoteData, etag) = pullSyncData()
 
             val finalSyncData = if (remoteData != null) {
@@ -125,7 +128,11 @@ class WebDavSyncService(
     private suspend fun pullSyncData(): Pair<SyncData?, String> {
         if (!validateSettings()) return Pair(null, "")
 
-        val lastETag = syncPreferences.lastSyncEtag().get()
+        // KMK --> Entity-tags must stay quoted (RFC 7232). Unquoted If-Match/If-None-Match makes
+        // nginx answer 412/200 instead of 412/304, which broke every sync once a remote file existed.
+        // Values stored by older builds were unquoted, so they are dropped once here.
+        val lastETag = syncPreferences.lastSyncEtag().get().takeIf { it.startsWith("\"") }.orEmpty()
+        // KMK <--
         val headersBuilder = Headers.Builder().add("Authorization", credentials)
         if (lastETag.isNotEmpty()) headersBuilder.add("If-None-Match", lastETag)
 
@@ -138,7 +145,7 @@ class WebDavSyncService(
             HttpStatus.SC_NOT_FOUND -> Pair(null, "")
             else -> {
                 if (response.isSuccessful) {
-                    val newETag = response.headers["ETag"]?.trim('"') ?: ""
+                    val newETag = response.headers["ETag"] ?: ""
                     val bytes = response.body.byteStream().use { it.readBytes() }
                     try {
                         val backup = protoBuf.decodeFromByteArray(Backup.serializer(), bytes)
@@ -173,7 +180,9 @@ class WebDavSyncService(
 
         when {
             response.isSuccessful -> {
-                val newETag = response.headers["ETag"]?.trim('"') ?: ""
+                // KMK --> Keep the quotes, see pullSyncData().
+                val newETag = response.headers["ETag"] ?: ""
+                // KMK <--
                 if (newETag.isNotEmpty()) syncPreferences.lastSyncEtag().set(newETag)
                 xLogI("WebDAV sync completed")
             }
@@ -181,7 +190,10 @@ class WebDavSyncService(
                 val message = "Sync conflict detected. Another device may have updated the remote backup. " +
                     "Please retry syncing or check your WebDAV folder."
                 xLogW(message)
-                notifier.showSyncError(message)
+                // KMK --> Must fail loudly: returning normally made the caller report success over
+                // this error notification, stamp the sync time, and leave the remote file untouched.
+                throw WebDavException(message)
+                // KMK <--
             }
             else -> {
                 val bodyStr = response.body.string()
