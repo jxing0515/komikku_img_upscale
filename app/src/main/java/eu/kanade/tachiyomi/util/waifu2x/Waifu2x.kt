@@ -45,6 +45,8 @@ object Waifu2x {
     // stop the JNI call, so a destroy() issued right after it frees Vulkan state the running call
     // still uses and leaves the engine stuck at 0% forever.
     private val nativeLock = Any()
+
+    private val nativeBusy = java.util.concurrent.atomic.AtomicInteger(0)
     // KMK <--
     private val downloadAttempts: MutableSet<String> =
         java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
@@ -544,7 +546,13 @@ object Waifu2x {
 
         processingId = id
         try {
-            val result = synchronized(nativeLock) { nativeProcessRealCugan(argbBitmap, id) }
+            val result = nativeBusy.incrementAndGet().let {
+                try {
+                    synchronized(nativeLock) { nativeProcessRealCugan(argbBitmap, id) }
+                } finally {
+                    nativeBusy.decrementAndGet()
+                }
+            }
             return if (result === argbBitmap) null else result
         } finally {
             processingId = -1
@@ -603,7 +611,10 @@ object Waifu2x {
     }
 
     fun prepareProcessing() {
-        nativeClearAbortProcessing()
+        // KMK --> Clearing the abort flag while an aborted call is still unwinding lets it keep
+        // running and holds nativeLock, so the next page spins at 0%. Only clear when idle.
+        if (nativeBusy.get() == 0) nativeClearAbortProcessing()
+        // KMK <--
     }
 
     /**

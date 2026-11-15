@@ -662,9 +662,11 @@ class ReaderActivity : BaseActivity() {
         uiBusyJob?.cancel()
         uiBusyJob = lifecycleScope.launch {
             delay(UI_BUSY_COOLDOWN_MS)
-            if (!viewModel.state.value.menuVisible) {
-                Waifu2x.setUiBusy(false)
-            }
+            // KMK --> Always release the native gate. Keeping it latched while a menu/sheet stays
+            // open stalls every enhancement at 0% until the reader is reopened (the native loop
+            // waits for ui_busy before submitting each tile).
+            Waifu2x.setUiBusy(false)
+            // KMK <--
         }
     }
     // KMK <--

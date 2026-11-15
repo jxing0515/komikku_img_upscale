@@ -291,7 +291,7 @@ object ImageEnhancer {
         initialTargetEnqueued = false
         if (resetNative) {
             try {
-                Waifu2x.abortProcessing()
+                // KMK --> abortProcessing() mid-tile leaves the Vulkan command buffer pending and every later call blocks at 0%; let the call finish and drop its result instead.
             } catch (t: Throwable) {
                 logcat(LogPriority.WARN, t) { "ImageEnhancer: Failed to signal native abort" }
             }
@@ -463,7 +463,7 @@ object ImageEnhancer {
             val job = disposable.job
             activeJob = job
             if (req.generation != generation.get() || req.cancelled.get()) {
-                Waifu2x.abortProcessing()
+                // KMK --> abortProcessing() mid-tile leaves the Vulkan command buffer pending and every later call blocks at 0%; let the call finish and drop its result instead.
                 job.cancel(CancellationException("Image enhancement request became obsolete"))
             }
             job.await()
@@ -534,7 +534,7 @@ object ImageEnhancer {
         logcat(LogPriority.DEBUG) {
             "ImageEnhancer: Preempting active page $activePageIndex/$activePageVariant ($reason)"
         }
-        Waifu2x.abortProcessing()
+        // KMK --> abortProcessing() mid-tile leaves the Vulkan command buffer pending and every later call blocks at 0%; let the call finish and drop its result instead.
         activeJob?.cancel(CancellationException("Image enhancement preempted: $reason"))
     }
 }
