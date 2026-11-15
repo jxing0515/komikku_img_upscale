@@ -93,16 +93,6 @@ object ImageEnhancementCache {
         return if (file.exists()) file else null
     }
 
-    /**
-     * Check if a file is already cached (helper for UI checks)
-     */
-    fun isCached(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
-        return getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant) != null
-    }
-
-    /**
-     * Remove a cached enhanced image and its temporary file for the same page/config.
-     */
     fun removeCachedImage(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
         return try {
             val dir = getChapterDir(mangaId, chapterId) ?: return false
@@ -113,17 +103,6 @@ object ImageEnhancementCache {
             removedFile && removedTemp
         } catch (e: Exception) {
             android.util.Log.e("ImageEnhancementCache", "Failed to remove cached image for page $pageIndex", e)
-            false
-        }
-    }
-
-    fun removeSkipMarker(mangaId: Long, chapterId: Long, pageIndex: Int, configHash: String, pageVariant: String = ""): Boolean {
-        return try {
-            val dir = getChapterDir(mangaId, chapterId) ?: return false
-            val file = File(dir, getFilename(pageIndex, configHash, pageVariant) + ".skip")
-            !file.exists() || file.delete()
-        } catch (e: Exception) {
-            android.util.Log.e("ImageEnhancementCache", "Failed to remove skip marker for page $pageIndex", e)
             false
         }
     }

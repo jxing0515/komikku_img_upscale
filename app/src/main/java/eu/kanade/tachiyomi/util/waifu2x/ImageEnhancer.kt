@@ -361,13 +361,6 @@ object ImageEnhancer {
             (pageIndex == targetSecondaryPageIndex && pageVariant == targetSecondaryPageVariant)
     }
 
-    fun isActivelyProcessing(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = ""): Boolean {
-        return activeMangaId == mangaId &&
-            activeChapterId == chapterId &&
-            activePageIndex == pageIndex &&
-            activePageVariant == pageVariant
-    }
-
     fun cancel(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = "") {
         val requestKey = requestKey(mangaId, chapterId, pageIndex, pageVariant)
         // Remove only the generation observed here: a newer request for the same page must survive.
