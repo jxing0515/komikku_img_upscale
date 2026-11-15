@@ -327,15 +327,11 @@ class PagerPageHolder(
         }
         try {
             val isLTR = (viewer !is R2LPagerViewer) xor viewer.config.invertDoublePages
-            // Scale the center margin by the upscale factor so the physical gap stays constant
-            // before and after enhancement.
-            val rawMargin = calculateCenterMargin(bitmap1.height, bitmap2.height)
-            val effectiveScale = ImageEnhancementCache.getEffectiveScale(
-                model = readerPreferences.realCuganModel().get(),
-                scale = readerPreferences.realCuganScale().get(),
-                realEsrganStyle = readerPreferences.realEsrganStyle().get(),
-            ).coerceAtLeast(1)
-            val centerMargin = (rawMargin * effectiveScale).coerceAtLeast(0)
+            // KMK --> Both bitmaps are already upscaled: calculateCenterMargin derives the margin
+            // from the bitmap heights, so it is already expressed in enhanced pixels. Multiplying
+            // it by the model scale again doubled the visible gap between the two pages.
+            val centerMargin = calculateCenterMargin(bitmap1.height, bitmap2.height).coerceAtLeast(0)
+            // KMK <--
             return ImageUtil.mergeBitmaps(bitmap1, bitmap2, isLTR, centerMargin, viewer.config.pageCanvasColor)
         } finally {
             bitmap1.recycle()

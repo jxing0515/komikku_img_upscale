@@ -44,11 +44,12 @@ object ImageEnhancer {
     private val seqGenerator = AtomicInteger(0)
     private val generation = AtomicInteger(0)
 
-    @Volatile
-    private var lastResetTime = 0L
-
-    @Volatile
-    private var isFirstRequestAfterReset = false
+    // KMK --> Consecutive source-read failures per page. The decoder records terminal failures as
+    // on-disk markers, but a page whose source stream cannot be opened never reaches the decoder,
+    // so without this the reader polling loop re-enqueues it every 500ms.
+    private const val SOURCE_FAILURE_THRESHOLD = 2
+    private val sourceFailures = ConcurrentHashMap<String, Int>()
+    // KMK <--
 
     @Volatile
     private var initialTargetEnqueued = false
@@ -134,14 +135,6 @@ object ImageEnhancer {
         scope.launch {
             while (true) {
                 try {
-                    if (isFirstRequestAfterReset) {
-                        val elapsed = System.currentTimeMillis() - lastResetTime
-                        if (elapsed < 700) {
-                            kotlinx.coroutines.delay(700 - elapsed)
-                        }
-                        isFirstRequestAfterReset = false
-                    }
-
                     val req = runInterruptible { queue.take() }
                     if (req.generation == generation.get()) {
                         processRequest(req)
@@ -182,6 +175,12 @@ object ImageEnhancer {
         enhanceLazy(context, mangaId, chapterId, pageIndex, highPriority, pageVariant) { data }
     }
 
+    /**
+     * Enqueue an enhancement request.
+     *
+     * Returns false only when this page is known to have no readable source, so callers can stop
+     * retrying it. A request that is merely skipped (already queued or being saved) returns true.
+     */
     fun enhanceLazy(
         context: Context,
         mangaId: Long,
@@ -190,8 +189,9 @@ object ImageEnhancer {
         highPriority: Boolean,
         pageVariant: String = "",
         dataProvider: () -> Any?,
-    ) {
-        if (ImageEnhancementCache.isSavePending(mangaId, chapterId, pageIndex, pageVariant)) return
+    ): Boolean {
+        if (isSourceUnavailable(mangaId, chapterId, pageIndex, pageVariant)) return false
+        if (ImageEnhancementCache.isSavePending(mangaId, chapterId, pageIndex, pageVariant)) return true
 
         val isInitialTargetRequest = !initialTargetEnqueued && pageIndex == targetPageIndex
         val effectiveHighPriority = highPriority || isInitialTargetRequest
@@ -215,15 +215,15 @@ object ImageEnhancer {
                     // Proceed to add below
                 } else {
                     // Already processing or failed to remove, skip
-                    return
+                    return true
                 }
             } else {
                 // Already pending and we are Low priority, so skip
-                return
+                return true
             }
         }
 
-        if (pendingRequests.putIfAbsent(requestKey, requestGeneration) != null) return
+        if (pendingRequests.putIfAbsent(requestKey, requestGeneration) != null) return true
 
         if (isInitialTargetRequest) {
             initialTargetEnqueued = true
@@ -258,27 +258,16 @@ object ImageEnhancer {
         }
 
         logcat(LogPriority.DEBUG) { "ImageEnhancer: Enqueued page $pageIndex/$pageVariant (priority=$priorityLevel)" }
-    }
-
-    fun reset(initialPageIndex: Int = 0) {
-        cancelAll(reason = "reset")
-        queue.clear()
-        pendingRequests.clear()
-        targetPageIndex = initialPageIndex
-        targetPageVariant = ""
-        targetSecondaryPageIndex = -1
-        targetSecondaryPageVariant = ""
-        seqGenerator.set(0)
-        lastResetTime = System.currentTimeMillis()
-        isFirstRequestAfterReset = true
-        initialTargetEnqueued = false
-        logcat(LogPriority.DEBUG) { "ImageEnhancer: Resetting state to page $initialPageIndex" }
+        return true
     }
 
     fun cancelAll(reason: String = "cancelAll", resetNative: Boolean = true) {
         generation.incrementAndGet()
         queue.clear()
         pendingRequests.clear()
+        // KMK --> A settings/chapter change gives every page a fresh chance at a readable source.
+        sourceFailures.clear()
+        // KMK <--
         activeJob?.cancel(CancellationException("Image enhancement cancelled: $reason"))
         activeRequest?.cancelled?.set(true)
         activeJob = null
@@ -345,6 +334,21 @@ object ImageEnhancer {
         return pendingRequests.containsKey(requestKey(mangaId, chapterId, pageIndex, pageVariant)) ||
             ImageEnhancementCache.isSavePending(mangaId, chapterId, pageIndex, pageVariant)
     }
+
+    // KMK -->
+    /**
+     * True once a page has repeatedly failed to produce a source stream, i.e. it cannot be
+     * enhanced in this process short of a settings change / chapter reload.
+     */
+    fun isSourceUnavailable(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = ""): Boolean {
+        return (sourceFailures[requestKey(mangaId, chapterId, pageIndex, pageVariant)] ?: 0) >= SOURCE_FAILURE_THRESHOLD
+    }
+
+    private fun markSourceFailure(key: String) {
+        if (sourceFailures.size > 512) sourceFailures.clear()
+        sourceFailures.merge(key, 1, Int::plus)
+    }
+    // KMK <--
 
     fun isFocusedTarget(pageIndex: Int, pageVariant: String = ""): Boolean {
         return (pageIndex == targetPageIndex && pageVariant == targetPageVariant) ||
@@ -425,7 +429,16 @@ object ImageEnhancer {
             activePageVariant = req.pageVariant
             activeRequest = req
             logcat(LogPriority.DEBUG) { "ImageEnhancer: Processing page ${req.pageIndex}/${req.pageVariant} (priority=${req.priority})" }
-            val data = req.dataProvider() ?: return
+            val data = req.dataProvider()
+            if (data == null) {
+                // KMK --> No readable source: the decoder (and its on-disk failure markers) never
+                // runs for this page, so record it here or the reader polls it forever.
+                markSourceFailure(req.key)
+                logcat(LogPriority.WARN) { "ImageEnhancer: Page ${req.pageIndex}/${req.pageVariant} has no readable source" }
+                return
+            }
+            sourceFailures.remove(req.key)
+            // KMK <--
             if (req.generation != generation.get() || req.cancelled.get()) return
             Waifu2x.prepareProcessing()
             if (req.cancelled.get()) return

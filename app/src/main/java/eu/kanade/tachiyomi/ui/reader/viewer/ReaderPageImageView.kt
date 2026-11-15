@@ -62,6 +62,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -677,7 +678,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     ): Boolean {
         // Returns false when the page has no usable source, so callers can stop retrying.
         val dataProvider = buildEnhancementDataProvider(streamFn, originalData) ?: return false
-        ImageEnhancer.enhanceLazy(
+        return ImageEnhancer.enhanceLazy(
             context = context.applicationContext,
             mangaId = mId,
             chapterId = cId,
@@ -686,7 +687,6 @@ open class ReaderPageImageView @JvmOverloads constructor(
             pageVariant = enhancementVariant(),
             dataProvider = dataProvider,
         )
-        return true
     }
 
     fun promoteEnhancementRequest(highPriority: Boolean = true) {
@@ -1525,6 +1525,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
         super.onDetachedFromWindow()
         processingJob?.cancel()
         processingJob = null
+        // The preference collectors started in init never complete on their own, and the pager
+        // creates a new holder for every position, so without this each page read leaves its view
+        // (and its bitmaps) reachable from the preference store for the rest of the process.
+        viewScope.cancel()
 
         enhancedOverlay.setImageBitmap(null)
         enhancedBitmap?.recycle()

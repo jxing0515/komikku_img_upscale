@@ -324,38 +324,25 @@ object ImageEnhancementCache {
     }
 
     /**
-     * Clear old cache files including skip markers
-     */
-    fun clearOldCache(mangaId: Long, chapterId: Long, currentPage: Int, keepRange: Int = 5) {
-        getChapterDir(mangaId, chapterId)?.listFiles()?.forEach { file ->
-            try {
-                // filename format: pageIndex_configHash.webp
-                val name = file.name
-                val parts = name.split("_")
-                if (parts.isNotEmpty()) {
-                    val pageIndex = parts[0].toIntOrNull()
-                    if (pageIndex != null) {
-                        // Delete if page is too far behind or ahead
-                        if (kotlin.math.abs(pageIndex - currentPage) > keepRange) {
-                            file.delete()
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                // Ignore errors
-            }
-        }
-    }
-
-    /**
-     * Delete all cache files
+     * Delete all cache files.
+     *
+     * The generation bump is synchronous so queued saves are dropped immediately, but the
+     * recursive delete runs on the save worker: every caller is a preference-change handler on the
+     * main thread and this directory can hold gigabytes.
      */
     fun clear(context: Context) {
         init(context)
         cacheGeneration.incrementAndGet()
         pendingSaveKeys.clear()
-        cacheDir?.deleteRecursively()
-        cacheDir?.mkdirs()
+        val dir = cacheDir ?: return
+        saveScope.launch {
+            try {
+                dir.deleteRecursively()
+            } catch (t: Throwable) {
+                android.util.Log.e("ImageEnhancementCache", "Failed to clear cache directory", t)
+            }
+            dir.mkdirs()
+        }
     }
 
     private fun pendingSaveKey(
@@ -430,21 +417,6 @@ object ImageEnhancementCache {
             3, 4, 5 -> 2
             Waifu2x.MODEL_REAL_ESRGAN_ANIME -> if (realEsrganStyle == Waifu2x.REAL_ESRGAN_STYLE_PHOTO) 2 else scale
             else -> scale
-        }
-    }
-
-    /**
-     * Clear all cache files for a specific chapter
-     */
-    fun clearChapterCache(mangaId: Long, chapterId: Long) {
-        try {
-            val chapterDir = getChapterDir(mangaId, chapterId)
-            if (chapterDir?.exists() == true) {
-                chapterDir.deleteRecursively()
-                android.util.Log.d("ImageEnhancementCache", "Cleared cache for manga $mangaId, chapter $chapterId")
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("ImageEnhancementCache", "Failed to clear chapter cache", e)
         }
     }
 
