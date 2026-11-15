@@ -72,8 +72,12 @@ object ImageEnhancer {
     @Volatile
     private var activeRequest: EnhanceRequest? = null
 
+    // KMK --> Native teardown is deferred to the worker loop: resetRealCugan() frees model state, so
+    // running it on another thread while the worker initialises or processes a page leaves the
+    // engine wedged and the reader stuck on the last progress value.
     @Volatile
-    private var nativeResetJob: Job? = null
+    private var nativeResetPending = false
+    // KMK <--
 
     // Current page the user is viewing. Used to prioritize requests closest to this page.
     @Volatile
@@ -136,6 +140,14 @@ object ImageEnhancer {
             while (true) {
                 try {
                     val req = runInterruptible { queue.take() }
+                    if (nativeResetPending) {
+                        nativeResetPending = false
+                        try {
+                            Waifu2x.resetRealCugan()
+                        } catch (t: Throwable) {
+                            logcat(LogPriority.ERROR, t) { "ImageEnhancer: Failed to reset native upscaler" }
+                        }
+                    }
                     if (req.generation == generation.get()) {
                         processRequest(req)
                     } else {
@@ -283,15 +295,9 @@ object ImageEnhancer {
             } catch (t: Throwable) {
                 logcat(LogPriority.WARN, t) { "ImageEnhancer: Failed to signal native abort" }
             }
-            if (nativeResetJob?.isActive != true) {
-                nativeResetJob = scope.launch {
-                    try {
-                        Waifu2x.resetRealCugan()
-                    } catch (t: Throwable) {
-                        logcat(LogPriority.ERROR, t) { "ImageEnhancer: Failed to reset native upscaler" }
-                    }
-                }
-            }
+            // KMK --> Applied by the worker loop before the next page is initialised.
+            nativeResetPending = true
+            // KMK <--
         }
         logcat(LogPriority.DEBUG) { "ImageEnhancer: Cancelled all enhancement work (reason=$reason)" }
     }

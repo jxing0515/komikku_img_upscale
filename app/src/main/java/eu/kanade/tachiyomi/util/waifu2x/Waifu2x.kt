@@ -41,8 +41,11 @@ object Waifu2x {
 
     @Volatile private var isW2xExInitialized = false
 
-    // Asset paths whose remote model download was already attempted in this process. Downloads
-    // run on the single enhancement worker, so a stalled connection would block every page.
+    // KMK --> Serialises native processing against native teardown. Cancelling a request does not
+    // stop the JNI call, so a destroy() issued right after it frees Vulkan state the running call
+    // still uses and leaves the engine stuck at 0% forever.
+    private val nativeLock = Any()
+    // KMK <--
     private val downloadAttempts: MutableSet<String> =
         java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
@@ -541,7 +544,7 @@ object Waifu2x {
 
         processingId = id
         try {
-            val result = nativeProcessRealCugan(argbBitmap, id)
+            val result = synchronized(nativeLock) { nativeProcessRealCugan(argbBitmap, id) }
             return if (result === argbBitmap) null else result
         } finally {
             processingId = -1
@@ -589,7 +592,7 @@ object Waifu2x {
         lastNoseConfig = null
         lastWaifu2xConfig = null
         lastW2xExConfig = null
-        nativeDestroy()
+        synchronized(nativeLock) { nativeDestroy() }
     }
 
     /**
