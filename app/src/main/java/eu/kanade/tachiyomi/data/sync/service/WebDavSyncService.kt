@@ -107,6 +107,14 @@ class WebDavSyncService(
             // KMK <--
             val (remoteData, etag) = pullSyncData()
 
+            // KMK --> 304 means the remote file is unchanged, NOT that it is missing. Treating it
+            // as "no remote data" overwrote the server backup with the local one.
+            if (remoteData == null && etag.isNotEmpty()) {
+                xLogD("Remote unchanged (304), skipping upload")
+                return syncData.backup
+            }
+            // KMK <--
+
             val finalSyncData = if (remoteData != null) {
                 assert(etag.isNotEmpty()) { "ETag should never be empty if remote data is not null" }
                 xLogD("Try update remote data with ETag(%s)", etag)
