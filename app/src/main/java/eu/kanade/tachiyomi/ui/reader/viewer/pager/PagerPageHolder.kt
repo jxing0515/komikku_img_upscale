@@ -26,6 +26,7 @@ import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
 import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
@@ -279,6 +280,10 @@ class PagerPageHolder(
                 }
                 removeErrorLayout()
             }
+        } catch (e: CancellationException) {
+            // KMK --> Turning a page cancels this holder's work on purpose. Logging that as an
+            // ERROR produced 320 noise lines per stress run and buried real failures.
+            logcat(LogPriority.DEBUG) { "PagerPageHolder: page load cancelled ${e.message}" }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e)
             withUIContext {
@@ -493,8 +498,11 @@ class PagerPageHolder(
                     LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM or Gravity.START,
                 ).apply {
-                    setMargins(20, 0, 0, 20)
+                    // KMK --> Keep clear of the centred page counter (see ReaderPageImageView).
+                    setMargins(20, 0, 0, (56 * resources.displayMetrics.density).toInt())
+                    // KMK <--
                 }
+
                 addView(makeEnhancementStatusTextView())
                 addView(makeEnhancementStatusTextView())
             }
@@ -513,6 +521,9 @@ class PagerPageHolder(
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         setBackgroundColor(Color.TRANSPARENT)
+        // KMK --> Long status text must not run under the centred page counter.
+        maxWidth = (resources.displayMetrics.widthPixels * 0.62f).toInt()
+        // KMK <--
     }
 
     private fun hideEnhancementStatus() {

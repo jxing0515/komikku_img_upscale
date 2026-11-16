@@ -189,8 +189,15 @@ open class ReaderPageImageView @JvmOverloads constructor(
         TextView(context).apply {
             layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
-                setMargins(20, 0, 0, 20)
+                // KMK --> Sit above the page counter ("1-2 / 30"), which is centred on the very
+                // bottom edge: at 20px the status line and the counter printed on top of each other.
+                val bottomInset = (STATUS_BOTTOM_INSET_DP * resources.displayMetrics.density).toInt()
+                setMargins(20, 0, 0, bottomInset)
+                // KMK <--
             }
+            // KMK --> Keep long status text from running under the centred page counter.
+            maxWidth = (resources.displayMetrics.widthPixels * 0.62f).toInt()
+            // KMK <--
             setTextColor(Color.WHITE)
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -1639,5 +1646,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
 /** Re-enqueues without any progress before the page is declared failed. */
 private const val MAX_POLL_REENQUEUE = 4
+/** Bottom inset of the enhancement status line, above the centred page counter. */
+private const val STATUS_BOTTOM_INSET_DP = 56
 private const val MAX_ZOOM_SCALE = 5F
 private const val PROCESSED_SWAP_DURATION_MS = 280L

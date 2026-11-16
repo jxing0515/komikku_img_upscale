@@ -276,10 +276,10 @@
     <string name="reader_status_processed">PROCESSED</string>
     <string name="reader_status_processing">PROCESSING</string>
     <string name="reader_status_queued">QUEUED</string>
-    <string name="reader_status_waiting">WAITING TO ENHANCE…</string>
-    <string name="reader_status_finishing">FINISHING...</string>
-    <string name="reader_status_enhancing">ENHANCING</string>
-    <string name="reader_status_enhancing_progress">ENHANCING... %1$d%%</string>
+    <string name="reader_status_waiting">Waiting to enhance…</string>
+    <string name="reader_status_finishing">Finishing…</string>
+    <string name="reader_status_enhancing">Enhancing</string>
+    <string name="reader_status_enhancing_progress">Enhancing… %1$d%%</string>
     <!-- KMK: terminal enhancement failure - the status line itself is the retry affordance -->
     <string name="reader_status_failed">Failed to enhance - tap to retry</string>
     <string name="about_upstreams">Upstream repositories</string>
