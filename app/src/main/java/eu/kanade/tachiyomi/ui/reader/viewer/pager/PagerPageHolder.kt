@@ -544,13 +544,18 @@ class PagerPageHolder(
         /** Enhancement failed: the reader may retry, so this one is worth a prompt. */
         FAILED,
         WORKING,
+        /** Enhanced, waiting for the cache file to land. Still progress, never "waiting to enhance". */
+        SAVING,
         QUEUED,
     }
 
     /** Returns null when the page is neither cached, terminal, working nor queued (needs enqueueing). */
     private fun pageWaitState(mId: Long, cId: Long, index: Int, variant: String, configHash: String): PageWaitState? {
         if (ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null) return PageWaitState.DONE
-        if (ImageEnhancementCache.isSavePending(mId, cId, index, variant)) return PageWaitState.QUEUED
+        // KMK --> Checked before the queue: while the encoder runs the page is no longer queued, and
+        // reporting that moment as "waiting to enhance" is what made one spread flicker back.
+        if (ImageEnhancementCache.isSavePending(mId, cId, index, variant)) return PageWaitState.SAVING
+        // KMK <--
         if (ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant)) return PageWaitState.SKIPPED
         if (ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant)) return PageWaitState.FAILED
         if (Waifu2x.getProgressId() == index) return PageWaitState.WORKING
@@ -567,6 +572,9 @@ class PagerPageHolder(
      * a half is preempted and restarted.
      */
     private var lastShownPercent = 0
+
+    /** Last status line written to the log, so the log carries a clean state sequence. */
+    private var lastLoggedStatusText: String? = ""
 
     /**
      * Rebuilds the spread after both halves landed in the cache. The per-page polling stops as soon
@@ -638,7 +646,14 @@ class PagerPageHolder(
 
                 val states = listOfNotNull(firstState, secondState)
                 val failed = states.any { it == PageWaitState.FAILED }
-                val waiting = states.any { it == PageWaitState.WORKING || it == PageWaitState.QUEUED }
+                // KMK --> "Still moving" includes the cache encoder: a page that is being written
+                // has already been enhanced, so calling that moment "waiting" made one spread flicker
+                // back to "Waiting to enhance…" between 43% and 55%.
+                val progressing = states.any {
+                    it == PageWaitState.WORKING || it == PageWaitState.QUEUED || it == PageWaitState.SAVING
+                }
+                val waiting = progressing
+                // KMK <--
                 // KMK --> Report the progress of the whole spread, not of whichever half happens to
                 // own the single native progress slot: page A ending at 82% and page B starting at
                 // 12% read as "the progress went backwards". (done + current/100) / pages only grows.
@@ -663,15 +678,29 @@ class PagerPageHolder(
                     failed -> context.stringResource(KMR.strings.reader_status_failed)
                     // KMK <--
                     !waiting -> null
-                    // KMK --> Once any half is done the line keeps showing the spread's progress.
-                    // Going back to "waiting" (which is what the second half queued behind the
-                    // first used to produce) made one spread change state four times.
-                    states.contains(PageWaitState.WORKING) || doneCount > 0 -> {
+                    // KMK --> Anything that is already on its way shows the spread's progress. Only
+                    // a spread where both halves are queued and nothing has happened yet may say
+                    // "waiting", so one spread stays at two transitions: waiting -> enhancing ->
+                    // silence.
+                    states.contains(PageWaitState.WORKING) ||
+                        states.contains(PageWaitState.SAVING) ||
+                        doneCount > 0 -> {
                         context.stringResource(KMR.strings.reader_status_enhancing_progress, shownPercent)
                     }
                     // KMK <--
                     else -> context.stringResource(KMR.strings.reader_status_waiting)
                 }
+
+                // KMK --> One line per visible change of the status line: a regression run can read
+                // the sequence straight out of the log instead of sampling screenshots.
+                if (text != lastLoggedStatusText) {
+                    lastLoggedStatusText = text
+                    logcat(LogPriority.DEBUG) {
+                        "PagerPageHolder: spread ${page.index}/${second.index} status=" +
+                            "${text ?: "<silent>"} (states=$states done=$doneCount pct=$shownPercent)"
+                    }
+                }
+                // KMK <--
 
                 // KMK --> Both halves are enhanced: rebuild the merged enhanced source once. The
                 // per-page polling stops as soon as its own half is cached, so this is what turns
@@ -777,7 +806,9 @@ class PagerPageHolder(
         logcat(LogPriority.DEBUG) {
             "PagerPageHolder: mergePages page=${page.index} extra=${extraPage?.index} " +
                 "secondSource=${imageSource2 != null} fullPage=${page.fullPage} " +
-                "secondFullPage=${extraPage?.fullPage}"
+                "secondFullPage=${extraPage?.fullPage} shiftedPage=${page.shiftedPage} " +
+                "isolatedPage=${page.isolatedPage} shiftDoublePage=${viewer.config.shiftDoublePage} " +
+                "doublePages=${viewer.config.doublePages}"
         }
         // KMK <--
         // Handle adding a center margin to wide images if requested
