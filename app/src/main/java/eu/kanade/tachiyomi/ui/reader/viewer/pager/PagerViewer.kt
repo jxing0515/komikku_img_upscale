@@ -232,7 +232,15 @@ abstract class PagerViewer(
             }
             currentPage = page
             when (page) {
-                is ReaderPage -> onReaderPageSelected(page, allowPreload, forward, pagePair.second != null)
+                // KMK --> The counter has to describe the holder that is actually on screen. When a
+                // spread is re-chunked down to one page (full page, undecodable half, shift) the old
+                // code still printed "1-2 / 30" under a single page.
+                is ReaderPage -> {
+                    val holder = getPageHolder(page)
+                    val hasExtraPage = holder?.item?.second != null || (holder == null && pagePair.second != null)
+                    onReaderPageSelected(page, allowPreload, forward, hasExtraPage)
+                }
+                // KMK <--
                 is ChapterTransition -> onTransitionSelected(page)
             }
         }
