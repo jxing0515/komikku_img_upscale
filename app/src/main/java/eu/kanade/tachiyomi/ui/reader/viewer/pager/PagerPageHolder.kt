@@ -498,8 +498,8 @@ class PagerPageHolder(
                     LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM or Gravity.START,
                 ).apply {
-                    // KMK --> Keep clear of the centred page counter (see ReaderPageImageView).
-                    setMargins(20, 0, 0, (56 * resources.displayMetrics.density).toInt())
+                    // KMK --> Keep the same clearance as ReaderPageImageView's single-page line.
+                    setMargins(20, 0, 0, (20 * resources.displayMetrics.density).toInt())
                     // KMK <--
                 }
 

@@ -1646,7 +1646,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
 /** Re-enqueues without any progress before the page is declared failed. */
 private const val MAX_POLL_REENQUEUE = 3
-/** Bottom inset of the enhancement status line, above the centred page counter. */
-private const val STATUS_BOTTOM_INSET_DP = 56
+/**
+ * Bottom inset of the enhancement status line. Sits just above the centred page counter: 20dp
+ * leaves an 8-12dp visual gap at 3x-3.5x density (measured 31px at 3.0), while 56dp floated away.
+ */
+private const val STATUS_BOTTOM_INSET_DP = 20
 private const val MAX_ZOOM_SCALE = 5F
 private const val PROCESSED_SWAP_DURATION_MS = 280L
