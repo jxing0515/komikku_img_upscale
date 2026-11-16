@@ -213,6 +213,19 @@ class PagerPageHolder(
         val streamFn = page.stream ?: return
         val streamFn2 = extraPage?.stream
 
+        // KMK --> The right half of a spread is loaded independently of the left one. When only the
+        // left stream is ready the merge silently degenerates to a single page while the pager still
+        // pairs two pages, which is what left the first spread of every chapter with a black right
+        // half and a "1-2 / 30" counter over a single page. Wait for the missing half and redraw.
+        if (extraPage != null && streamFn2 == null) {
+            logcat(LogPriority.DEBUG) {
+                "PagerPageHolder: page ${page.index} spread half ${extraPage?.index} has no stream yet, " +
+                    "showing it alone for now and redrawing when it arrives"
+            }
+            scheduleSpreadRedraw()
+        }
+        // KMK <--
+
         try {
             val (source, isAnimated, background) = withIOContext {
                 streamFn().buffered(16).use { source ->
@@ -272,6 +285,38 @@ class PagerPageHolder(
             }
         }
     }
+
+    // KMK -->
+    private var spreadRedrawScheduled = false
+
+    /**
+     * Redraws the spread once the missing half finally has a stream. Only the first attempt of a
+     * holder schedules this, and a successful redraw clears the flag, so a page that never becomes
+     * available does not spin.
+     */
+    private fun scheduleSpreadRedraw() {
+        if (spreadRedrawScheduled) return
+        spreadRedrawScheduled = true
+        scope.launch {
+            try {
+                var waited = 0
+                while (waited < 100 && extraPage?.stream == null) {
+                    delay(100)
+                    waited++
+                }
+                val second = extraPage
+                if (second != null && second.stream != null) {
+                    logcat(LogPriority.DEBUG) {
+                        "PagerPageHolder: redrawing spread ${page.index}/${second.index}, second half is ready"
+                    }
+                    setImage()
+                }
+            } finally {
+                spreadRedrawScheduled = false
+            }
+        }
+    }
+    // KMK <--
 
     private fun setupDoublePageEnhancement() {
         val second = extraPage
@@ -369,12 +414,27 @@ class PagerPageHolder(
             second.index,
             configHash,
             second.enhancementKeySuffix,
-        ) ?: return null
+        ) ?: run {
+            // KMK --> Not an error: the second half is simply still being processed.
+            logcat(LogPriority.DEBUG) {
+                "PagerPageHolder: spread ${page.index}/${second.index} still waiting for the second half"
+            }
+            return null
+            // KMK <--
+        }
 
-        val bitmap1 = decodeEnhancedBitmap(firstFile) ?: return null
+        val bitmap1 = decodeEnhancedBitmap(firstFile) ?: run {
+            logcat(LogPriority.WARN) {
+                "PagerPageHolder: cannot decode enhanced page ${page.index} from ${firstFile.name}"
+            }
+            return null
+        }
         val bitmap2 = decodeEnhancedBitmap(secondFile)
         if (bitmap2 == null) {
             bitmap1.recycle()
+            logcat(LogPriority.WARN) {
+                "PagerPageHolder: cannot decode enhanced page ${second.index} from ${secondFile.name}"
+            }
             return null
         }
         try {
@@ -674,12 +734,28 @@ class PagerPageHolder(
     }
 
     private fun mergePages(imageSource: BufferedSource, imageSource2: BufferedSource?): BufferedSource {
+        // KMK --> Which branch a spread takes decides whether the reader sees one page or two, so
+        // say it out loud: every report of "the right half is black" has to be traceable to a line.
+        logcat(LogPriority.DEBUG) {
+            "PagerPageHolder: mergePages page=${page.index} extra=${extraPage?.index} " +
+                "secondSource=${imageSource2 != null} fullPage=${page.fullPage} " +
+                "secondFullPage=${extraPage?.fullPage}"
+        }
+        // KMK <--
         // Handle adding a center margin to wide images if requested
         if (imageSource2 == null) {
             return handleWideImage(imageSource)
         }
 
-        if (page.fullPage) return imageSource
+        if (page.fullPage) {
+            // KMK --> A full-page entry never pairs with the next one, so the pager has to be told
+            // to stop showing them together. Without the re-chunk the holder keeps a two-page slot
+            // and the second half is simply never drawn.
+            logcat(LogPriority.DEBUG) { "PagerPageHolder: page ${page.index} is fullPage, splitting spread" }
+            splitDoublePages()
+            // KMK <--
+            return imageSource
+        }
         if (ImageUtil.isAnimatedAndSupported(imageSource)) {
             page.fullPage = true
             splitDoublePages()
@@ -696,7 +772,9 @@ class PagerPageHolder(
             imageSource2.close()
             page.fullPage = true
             splitDoublePages()
-            logcat(LogPriority.ERROR) { "Cannot combine pages" }
+            logcat(LogPriority.ERROR) {
+                "Cannot combine pages: page ${page.index} could not be decoded, showing it alone"
+            }
             return imageSource
         }
 
@@ -714,7 +792,9 @@ class PagerPageHolder(
             extraPage?.fullPage = true
             page.isolatedPage = true
             splitDoublePages()
-            logcat(LogPriority.ERROR) { "Cannot combine pages" }
+            logcat(LogPriority.ERROR) {
+                "Cannot combine pages: half ${extraPage?.index} of page ${page.index} could not be decoded"
+            }
             return imageSource
         }
 
