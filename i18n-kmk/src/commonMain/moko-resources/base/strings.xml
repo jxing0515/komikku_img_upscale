@@ -280,5 +280,7 @@
     <string name="reader_status_finishing">FINISHING...</string>
     <string name="reader_status_enhancing">ENHANCING</string>
     <string name="reader_status_enhancing_progress">ENHANCING... %1$d%%</string>
+    <!-- KMK: terminal enhancement failure - the status line itself is the retry affordance -->
+    <string name="reader_status_failed">Failed to enhance - tap to retry</string>
     <string name="about_upstreams">Upstream repositories</string>
 </resources>

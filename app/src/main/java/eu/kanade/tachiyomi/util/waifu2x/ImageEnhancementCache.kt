@@ -302,6 +302,29 @@ object ImageEnhancementCache {
         return File(dir, getFilename(pageIndex, configHash, pageVariant) + ".fail").exists()
     }
 
+    // KMK -->
+    /**
+     * Removes the failure marker of a page so the next attempt may run again. The reader offers this
+     * as "tap to retry" on a page that could not be enhanced; without it the terminal marker would
+     * keep the page unusable until the enhancement settings change.
+     */
+    fun clearFailure(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String = "") {
+        try {
+            val dir = getChapterDir(mangaId, chapterId) ?: return
+            val prefix = "${pageIndex}_"
+            val variantSuffix = if (pageVariant.isEmpty()) null else "_$pageVariant.webp.fail"
+            dir.listFiles()?.forEach { file ->
+                val name = file.name
+                if (!name.startsWith(prefix) || !name.endsWith(".fail")) return@forEach
+                if (variantSuffix != null && !name.endsWith(variantSuffix)) return@forEach
+                file.delete()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImageEnhancementCache", "Failed to clear failure marker for page $pageIndex", e)
+        }
+    }
+    // KMK <--
+
     /**
      * Delete all cache files.
      *

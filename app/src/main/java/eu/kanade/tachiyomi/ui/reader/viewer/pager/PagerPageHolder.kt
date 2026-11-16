@@ -467,7 +467,10 @@ class PagerPageHolder(
      */
     private enum class PageWaitState {
         DONE,
-        TERMINAL,
+        /** Too large / unsupported backend: deliberately not enhanced, nothing to retry. */
+        SKIPPED,
+        /** Enhancement failed: the reader may retry, so this one is worth a prompt. */
+        FAILED,
         WORKING,
         QUEUED,
     }
@@ -476,12 +479,50 @@ class PagerPageHolder(
     private fun pageWaitState(mId: Long, cId: Long, index: Int, variant: String, configHash: String): PageWaitState? {
         if (ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null) return PageWaitState.DONE
         if (ImageEnhancementCache.isSavePending(mId, cId, index, variant)) return PageWaitState.QUEUED
-        if (ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant)) return PageWaitState.TERMINAL
-        if (ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant)) return PageWaitState.TERMINAL
+        if (ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant)) return PageWaitState.SKIPPED
+        if (ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant)) return PageWaitState.FAILED
         if (Waifu2x.getProgressId() == index) return PageWaitState.WORKING
         if (ImageEnhancer.hasRequest(mId, cId, index, variant)) return PageWaitState.QUEUED
         return null
     }
+
+    // KMK -->
+    /** Guards the one-shot merged-source refresh once both halves are enhanced. */
+    private var mergedRefreshDone = false
+
+    /**
+     * Rebuilds the spread after both halves landed in the cache. The per-page polling stops as soon
+     * as its own half is cached (otherwise it re-read the disk every 500ms), so this is what turns
+     * the raw merged spread into the enhanced one.
+     */
+    private fun refreshMergedSource() {
+        if (!suppressSinglePageProcessedSwap) return
+        logcat(LogPriority.DEBUG) {
+            "PagerPageHolder: spread ${page.index}/${extraPage?.index} fully enhanced, refreshing merged source"
+        }
+        scope.launch { setImage() }
+    }
+
+    /** Clears the terminal markers of this spread and queues both halves again. */
+    private fun retryFailedSpreadPages() {
+        val mId = page.chapter.chapter.manga_id ?: -1L
+        val cId = page.chapter.chapter.id ?: -1L
+        if (mId == -1L || cId == -1L) return
+        val configHash = enhancementConfigHash()
+        listOfNotNull(page, extraPage).forEach { target ->
+            if (ImageEnhancementCache.isFailed(mId, cId, target.index, configHash, target.enhancementKeySuffix)) {
+                ImageEnhancementCache.clearFailure(mId, cId, target.index, target.enhancementKeySuffix)
+            }
+        }
+        logcat(LogPriority.DEBUG) {
+            "PagerPageHolder: retrying enhancement for spread ${page.index}/${extraPage?.index}"
+        }
+        mergedRefreshDone = false
+        promoteEnhancementRequest(highPriority = true)
+        extraPage?.let { enqueueSecondPageEnhancement(it) }
+        startEnhancementStatusTracking()
+    }
+    // KMK <--
 
     private fun startEnhancementStatusTracking() {
         enhancementStatusJob?.cancel()
@@ -515,8 +556,13 @@ class PagerPageHolder(
                 }
 
                 val states = listOfNotNull(firstState, secondState)
+                val failed = states.any { it == PageWaitState.FAILED }
                 val waiting = states.any { it == PageWaitState.WORKING || it == PageWaitState.QUEUED }
                 val text = when {
+                    // KMK --> A page that terminally failed must say so and stay clickable: the
+                    // alternative was a spread that silently lost one half and never explained why.
+                    failed -> context.stringResource(KMR.strings.reader_status_failed)
+                    // KMK <--
                     !waiting -> null
                     states.contains(PageWaitState.WORKING) -> {
                         val percent = Waifu2x.getProgressPercent()
@@ -529,6 +575,19 @@ class PagerPageHolder(
                     else -> context.stringResource(KMR.strings.reader_status_waiting)
                 }
 
+                // KMK --> Both halves are enhanced: rebuild the merged enhanced source once. The
+                // per-page polling stops as soon as its own half is cached, so this is what turns
+                // the raw merged spread into the enhanced one.
+                if (
+                    !mergedRefreshDone &&
+                    firstState == PageWaitState.DONE &&
+                    secondState == PageWaitState.DONE
+                ) {
+                    mergedRefreshDone = true
+                    refreshMergedSource()
+                }
+                // KMK <--
+
                 val showStatus = readerPreferences.realCuganShowStatus().get()
                 withUIContext {
                     if (text == null || !showStatus) {
@@ -539,6 +598,13 @@ class PagerPageHolder(
                         enhancementStatusContainer?.let {
                             it.isVisible = true
                             it.bringToFront()
+                            // KMK --> Only the failure line is actionable.
+                            if (failed) {
+                                it.setOnClickListener { retryFailedSpreadPages() }
+                            } else {
+                                it.setOnClickListener(null)
+                            }
+                            // KMK <--
                         }
                     }
                 }

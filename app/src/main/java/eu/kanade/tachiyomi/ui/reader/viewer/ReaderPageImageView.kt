@@ -261,11 +261,33 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 statusView.isVisible = false
                 return@post
             }
+            retryPendingAction = null
+            statusView.setOnClickListener(null)
             statusView.text = text
             statusView.isVisible = true
             statusView.bringToFront()
         }
     }
+
+    // KMK -->
+    /**
+     * Shows the one state the reader is allowed to offer for a page that cannot be enhanced any
+     * more, and makes that line the retry affordance itself (HANDOFF §2: 等待中 / 增强中 N% /
+     * 失败可点重试).
+     */
+    protected fun showRetryPrompt(onRetry: () -> Unit) {
+        retryPendingAction = onRetry
+        lastStatusText = context.stringResource(KMR.strings.reader_status_failed)
+        post {
+            statusView.text = lastStatusText
+            statusView.isVisible = true
+            statusView.setOnClickListener { retryPendingAction?.invoke() }
+            statusView.bringToFront()
+        }
+    }
+
+    private var retryPendingAction: (() -> Unit)? = null
+    // KMK <--
     // KMK <--
 
     var onImageLoaded: (() -> Unit)? = null
@@ -1307,6 +1329,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 val pageVariant = enhancementVariant()
                 var attempts = 0
                 var wasEnhancing = false
+                var reenqueueAttempts = 0
+                var cacheHitLogged = false
                 while (attempts < 120 && isActive) {
                     if (
                         ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
@@ -1317,7 +1341,16 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     }
                     val file = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
                     if (file != null) {
-                        logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx/$pageVariant found in cache during polling: ${file.absolutePath}" }
+                        if (!cacheHitLogged) {
+                            // KMK --> Log once: this used to repeat every 500ms for as long as the
+                            // spread waited for its other half.
+                            logcat(LogPriority.DEBUG) {
+                                "ReaderPageImageView: Page $pIdx/$pageVariant found in cache during polling: " +
+                                    file.absolutePath
+                            }
+                            cacheHitLogged = true
+                            // KMK <--
+                        }
                         val transformedSource = enhancedImageSourceFactory?.invoke(file)
                         if (transformedSource != null) {
                             withUIContext {
@@ -1327,11 +1360,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         }
 
                         if (suppressSinglePageProcessedSwap) {
-                            // Double-page merge: keep raw merged image until the merge factory
-                            // returns a combined enhanced source. Don't swap in a single page.
-                            delay(500)
-                            attempts++
-                            continue
+                            // KMK --> Double-page merge: this page is already enhanced, the merged
+                            // source only exists once the other half lands. That refresh is driven
+                            // by PagerPageHolder's spread status loop, so stop polling here instead
+                            // of re-reading the cache every 500ms.
+                            return@launchIO
+                            // KMK <--
                         }
 
                         val bitmap = decodeEnhancedBitmap(file)
@@ -1399,6 +1433,24 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 delay(2000)
                                 return@launchIO
                             }
+                            // KMK --> A page that keeps falling out of the queue without ever
+                            // producing a cache entry is not going to converge. Record the terminal
+                            // marker and offer the retry line instead of looping forever.
+                            reenqueueAttempts++
+                            if (reenqueueAttempts > MAX_POLL_REENQUEUE) {
+                                ImageEnhancementCache.saveFailedToCache(mId, cId, pIdx, configHash, pageVariant)
+                                logcat(LogPriority.WARN) {
+                                    "ReaderPageImageView: Page $pIdx/$pageVariant never converged after " +
+                                        "$reenqueueAttempts re-enqueues, marked as failed"
+                                }
+                                withUIContext {
+                                    showRetryPrompt {
+                                        retryEnhancement(mId, cId, pIdx, configHash, originalData, streamFn)
+                                    }
+                                }
+                                return@launchIO
+                            }
+                            // KMK <--
                         } else {
                             updateStatus(null)
                             delay(2000)
@@ -1416,6 +1468,37 @@ open class ReaderPageImageView @JvmOverloads constructor(
             }
         }
     }
+
+    // KMK -->
+    private fun retryEnhancement(
+        mId: Long,
+        cId: Long,
+        pIdx: Int,
+        configHash: String,
+        originalData: Any?,
+        streamFn: (() -> java.io.InputStream)?,
+    ) {
+        viewScope.launchIO {
+            val pageVariant = enhancementVariant()
+            // The terminal marker has to go first, otherwise the decoder refuses to try again.
+            ImageEnhancementCache.clearFailure(mId, cId, pIdx, pageVariant)
+            retryPendingAction = null
+            post {
+                statusView.setOnClickListener(null)
+                statusView.isVisible = false
+            }
+            enqueueEnhancement(
+                mId,
+                cId,
+                pIdx,
+                highPriority = true,
+                originalData = originalData,
+                streamFn = streamFn,
+            )
+            startEnhancementPolling(mId, cId, pIdx, configHash, originalData, streamFn)
+        }
+    }
+
     // KMK <--
 
     private fun prepareAnimatedImageView() {
@@ -1545,5 +1628,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     // KMK <--
 }
 
+/** Re-enqueues without any progress before the page is declared failed. */
+private const val MAX_POLL_REENQUEUE = 4
 private const val MAX_ZOOM_SCALE = 5F
 private const val PROCESSED_SWAP_DURATION_MS = 280L

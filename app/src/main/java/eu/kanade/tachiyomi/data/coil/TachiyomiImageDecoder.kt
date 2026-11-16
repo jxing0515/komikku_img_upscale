@@ -97,8 +97,15 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
         // KMK <--
         decoder.recycle()
 
+        // KMK --> A source that cannot be decoded never reaches the enhancement branch below, so
+        // without a marker the page has no terminal state at all: the reader re-enqueues it every
+        // 500ms forever and the failed half of a spread silently disappears. Record the failure
+        // first, then keep failing the decode so the holder shows its error layout.
+        if (bitmap == null) {
+            markUndecodableSourceAsFailed()
+        }
         check(bitmap != null) { "Failed to decode image" }
-
+        // KMK <--
         // KMK -->
         // --- Enhancement Integration ---
         if (options.enhanced) {
@@ -381,20 +388,9 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
     }
 
     // KMK -->
-    private fun decodeCachedEnhancedImage(): Bitmap? {
-        if (!options.enhanced) return null
-
-        val mangaId = options.mangaId
-        val chapterId = options.chapterId
-        val pageIndex = options.pageIndex
-        if (mangaId == -1L || chapterId == -1L || pageIndex == -1) return null
-
-        val preferences = Injekt.get<ReaderPreferences>()
-        if (!preferences.realCuganEnabled().get()) return null
-
-        val context = Injekt.get<Application>()
-        ImageEnhancementCache.init(context)
-        val configHash = ImageEnhancementCache.getConfigHash(
+    // KMK -->
+    private fun enhancementConfigHash(preferences: ReaderPreferences): String {
+        return ImageEnhancementCache.getConfigHash(
             noise = preferences.realCuganNoiseLevel().get(),
             scale = preferences.realCuganScale().get(),
             model = preferences.realCuganModel().get(),
@@ -408,6 +404,44 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
             fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
             processingBackend = preferences.realCuganProcessingBackend().get(),
         )
+    }
+
+    /**
+     * Records a terminal enhancement failure for a source that cannot even be decoded. Only called
+     * when the enhancement pipeline is active for this request, so ordinary decode errors of
+     * unrelated images do not litter the cache directory with markers.
+     */
+    private fun markUndecodableSourceAsFailed() {
+        if (!options.enhanced) return
+        val mangaId = options.mangaId
+        val chapterId = options.chapterId
+        val pageIndex = options.pageIndex
+        if (mangaId == -1L || chapterId == -1L || pageIndex == -1) return
+        val preferences = Injekt.get<ReaderPreferences>()
+        if (!preferences.realCuganEnabled().get()) return
+        ImageEnhancementCache.init(context)
+        val configHash = enhancementConfigHash(preferences)
+        ImageEnhancementCache.saveFailedToCache(mangaId, chapterId, pageIndex, configHash, options.pageVariant)
+        logcat(LogPriority.WARN) {
+            "TachiyomiImageDecoder: Page $pageIndex/${options.pageVariant} source is not decodable, " +
+                "marked as failed so it is not re-enqueued forever"
+        }
+    }
+
+    private fun decodeCachedEnhancedImage(): Bitmap? {
+        if (!options.enhanced) return null
+
+        val mangaId = options.mangaId
+        val chapterId = options.chapterId
+        val pageIndex = options.pageIndex
+        if (mangaId == -1L || chapterId == -1L || pageIndex == -1) return null
+
+        val preferences = Injekt.get<ReaderPreferences>()
+        if (!preferences.realCuganEnabled().get()) return null
+
+        val context = Injekt.get<Application>()
+        ImageEnhancementCache.init(context)
+        val configHash = enhancementConfigHash(preferences)
         val cachedFile = ImageEnhancementCache.getCachedImage(
             mangaId,
             chapterId,
