@@ -78,6 +78,7 @@ import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -1331,6 +1332,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 var wasEnhancing = false
                 var reenqueueAttempts = 0
                 var cacheHitLogged = false
+                // KMK --> The reported percentage must never decrease for the page being shown.
+                var lastPercent = -1
+                // KMK <--
+
                 while (attempts < 120 && isActive) {
                     if (
                         ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
@@ -1397,7 +1402,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         wasEnhancing = true
                         val rawProgress = Waifu2x.getProgressPercent()
                         if (rawProgress in 0..100) {
-                            updateStatus(context.stringResource(KMR.strings.reader_status_enhancing_progress, rawProgress))
+                            // KMK --> Only ever report a value the reader has not already passed.
+                            val shownProgress = max(rawProgress, lastPercent)
+                            lastPercent = shownProgress
+                            updateStatus(context.stringResource(KMR.strings.reader_status_enhancing_progress, shownProgress))
+                            // KMK <--
                         } else {
                             val dots = (rawProgress % 3).let { if (it < 0) -it else it } + 1
                             updateStatus(context.stringResource(KMR.strings.reader_status_enhancing) + ".".repeat(dots))

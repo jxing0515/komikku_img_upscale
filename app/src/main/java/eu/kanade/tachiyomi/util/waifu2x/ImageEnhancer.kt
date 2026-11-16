@@ -312,6 +312,14 @@ object ImageEnhancer {
         targetPageVariant = pageVariant
         targetSecondaryPageIndex = secondaryPageIndex ?: -1
         targetSecondaryPageVariant = if (secondaryPageIndex != null) secondaryPageVariant else ""
+        // KMK --> Log the focus change itself. Without it a "Preempting active page" line cannot be
+        // told apart from a visible page being preempted, which is exactly the question t2/t7 ask.
+        logcat(LogPriority.DEBUG) {
+            "ImageEnhancer: Visible target is now $targetPageIndex/$targetPageVariant " +
+                "secondary=$targetSecondaryPageIndex/$targetSecondaryPageVariant " +
+                "(active=$activePageIndex/$activePageVariant)"
+        }
+        // KMK <--
         // KMK --> Drop stale preloaded pages that have already been scrolled past.
         queue.removeIf { req ->
             if (req.pageIndex < targetPageIndex - STALE_PRELOAD_PRUNE_BEHIND) {
@@ -505,13 +513,19 @@ object ImageEnhancer {
 
     private fun preemptActiveRequestIfNotTarget() {
         // KMK --> Preempt any active request that is not the currently visible target so the
-        // page the user is reading gets processed as soon as possible.
+        // page the user is reading gets processed as soon as possible. Both halves of the visible
+        // spread are targets, so a visible page is never preempted here.
         if (
             activePageIndex >= 0 &&
             !isFocusedTarget(activePageIndex, activePageVariant)
         ) {
             // Future preload pages may be re-queued later; pages already read past are dropped.
             val requeue = activePageIndex > targetPageIndex
+            logcat(LogPriority.DEBUG) {
+                "ImageEnhancer: Active $activePageIndex/$activePageVariant is outside the visible " +
+                    "target $targetPageIndex/$targetPageVariant + secondary " +
+                    "$targetSecondaryPageIndex/$targetSecondaryPageVariant"
+            }
             preemptActiveRequest("active page is not the visible target", requeue = requeue)
         }
         // KMK <--

@@ -48,6 +48,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * View of the ViewPager that contains a page of a chapter.
@@ -551,6 +552,12 @@ class PagerPageHolder(
     private var mergedRefreshDone = false
 
     /**
+     * Highest spread progress already shown. The reported number must never decrease, not even when
+     * a half is preempted and restarted.
+     */
+    private var lastShownPercent = 0
+
+    /**
      * Rebuilds the spread after both halves landed in the cache. The per-page polling stops as soon
      * as its own half is cached (otherwise it re-read the disk every 500ms), so this is what turns
      * the raw merged spread into the enhanced one.
@@ -586,6 +593,9 @@ class PagerPageHolder(
 
     private fun startEnhancementStatusTracking() {
         enhancementStatusJob?.cancel()
+        // KMK --> A new monitoring round starts from zero; lastShownPercent only guards a run.
+        lastShownPercent = 0
+        // KMK <--
         val second = extraPage ?: return
         val mId = page.chapter.chapter.manga_id ?: -1L
         val cId = page.chapter.chapter.id ?: -1L
@@ -618,20 +628,37 @@ class PagerPageHolder(
                 val states = listOfNotNull(firstState, secondState)
                 val failed = states.any { it == PageWaitState.FAILED }
                 val waiting = states.any { it == PageWaitState.WORKING || it == PageWaitState.QUEUED }
+                // KMK --> Report the progress of the whole spread, not of whichever half happens to
+                // own the single native progress slot: page A ending at 82% and page B starting at
+                // 12% read as "the progress went backwards". (done + current/100) / pages only grows.
+                val doneCount = states.count { it == PageWaitState.DONE || it == PageWaitState.SKIPPED }
+                val progressOwner = Waifu2x.getProgressId()
+                val activePercent = if (progressOwner == page.index || progressOwner == second.index) {
+                    Waifu2x.getProgressPercent().coerceIn(0, 100)
+                } else {
+                    0
+                }
+                val overallPercent = if (states.isEmpty()) {
+                    0
+                } else {
+                    ((doneCount + activePercent / 100f) / states.size * 100f).roundToInt().coerceIn(0, 100)
+                }
+                val shownPercent = max(overallPercent, lastShownPercent)
+                lastShownPercent = shownPercent
+                // KMK <--
                 val text = when {
                     // KMK --> A page that terminally failed must say so and stay clickable: the
                     // alternative was a spread that silently lost one half and never explained why.
                     failed -> context.stringResource(KMR.strings.reader_status_failed)
                     // KMK <--
                     !waiting -> null
-                    states.contains(PageWaitState.WORKING) -> {
-                        val percent = Waifu2x.getProgressPercent()
-                        if (percent in 0..100) {
-                            context.stringResource(KMR.strings.reader_status_enhancing_progress, percent)
-                        } else {
-                            context.stringResource(KMR.strings.reader_status_enhancing)
-                        }
+                    // KMK --> Once any half is done the line keeps showing the spread's progress.
+                    // Going back to "waiting" (which is what the second half queued behind the
+                    // first used to produce) made one spread change state four times.
+                    states.contains(PageWaitState.WORKING) || doneCount > 0 -> {
+                        context.stringResource(KMR.strings.reader_status_enhancing_progress, shownPercent)
                     }
+                    // KMK <--
                     else -> context.stringResource(KMR.strings.reader_status_waiting)
                 }
 
