@@ -308,6 +308,9 @@ class PagerPageHolder(
         val mId = page.chapter.chapter.manga_id ?: -1L
         val cId = page.chapter.chapter.id ?: -1L
         if (mId == -1L || cId == -1L) return
+        // Never queue a page whose source is not loaded yet: a null provider counts as a source
+        // failure, and two of those make the page permanently un-enhanceable.
+        if (target.stream == null && target.imageUrl == null) return
         val configHash = enhancementConfigHash()
         if (ImageEnhancementCache.getCachedImage(mId, cId, target.index, configHash, target.enhancementKeySuffix) != null) return
         if (ImageEnhancementCache.isSkipped(mId, cId, target.index, configHash, target.enhancementKeySuffix)) return
@@ -327,6 +330,23 @@ class PagerPageHolder(
                 null
             }
         }
+    }
+
+    override fun onPageSelected(forward: Boolean) {
+        super.onPageSelected(forward)
+        // KMK --> The right half of a spread is visible too. Without secondary focus it stays a
+        // low-priority preload, is preempted on every page turn and never reaches an enhanced file.
+        val second = extraPage
+        ImageEnhancer.reprioritizeAround(
+            pageIndex = page.index,
+            pageVariant = page.enhancementKeySuffix,
+            secondaryPageIndex = second?.index,
+            secondaryPageVariant = second?.enhancementKeySuffix ?: "",
+        )
+        if (second != null) {
+            enqueueSecondPageEnhancement(second)
+        }
+        // KMK <--
     }
     // KMK <--
 
@@ -440,6 +460,29 @@ class PagerPageHolder(
         enhancementStatusContainer?.isVisible = false
     }
 
+    // KMK -->
+    /**
+     * What the visible spread can tell the reader: whether it still has to wait, and nothing else.
+     * "Already enhanced" and "will never be enhanced" both mean "do not wait", so neither shows text.
+     */
+    private enum class PageWaitState {
+        DONE,
+        TERMINAL,
+        WORKING,
+        QUEUED,
+    }
+
+    /** Returns null when the page is neither cached, terminal, working nor queued (needs enqueueing). */
+    private fun pageWaitState(mId: Long, cId: Long, index: Int, variant: String, configHash: String): PageWaitState? {
+        if (ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null) return PageWaitState.DONE
+        if (ImageEnhancementCache.isSavePending(mId, cId, index, variant)) return PageWaitState.QUEUED
+        if (ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant)) return PageWaitState.TERMINAL
+        if (ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant)) return PageWaitState.TERMINAL
+        if (Waifu2x.getProgressId() == index) return PageWaitState.WORKING
+        if (ImageEnhancer.hasRequest(mId, cId, index, variant)) return PageWaitState.QUEUED
+        return null
+    }
+
     private fun startEnhancementStatusTracking() {
         enhancementStatusJob?.cancel()
         val second = extraPage ?: return
@@ -447,73 +490,66 @@ class PagerPageHolder(
         val cId = page.chapter.chapter.id ?: -1L
         if (mId == -1L || cId == -1L) return
         val views = ensureEnhancementStatusViews() ?: return
-        val (firstView, secondView) = views
+        val (statusView, hiddenView) = views
+        hiddenView.isVisible = false
         // Cache lookups hit the filesystem, so keep the polling loop off the main thread.
         enhancementStatusJob = scope.launchIO {
             var attempts = 0
             // Cancellation is delivered via `delay`, so the loop exits on detach.
             while (attempts < 240) {
                 val configHash = enhancementConfigHash()
-                val firstStatus = computeEnhancementStatus(mId, cId, page.index, page.enhancementKeySuffix, configHash)
-                val secondStatus = computeEnhancementStatus(mId, cId, second.index, second.enhancementKeySuffix, configHash)
-                withUIContext {
-                    firstView.text = firstStatus
-                    firstView.isVisible = true
-                    secondView.text = secondStatus
-                    secondView.isVisible = true
-                    enhancementStatusContainer?.let {
-                        it.isVisible = true
-                        it.bringToFront()
+                var firstState = pageWaitState(mId, cId, page.index, page.enhancementKeySuffix, configHash)
+                var secondState = pageWaitState(mId, cId, second.index, second.enhancementKeySuffix, configHash)
+
+                // A visible page that is neither cached nor queued would silently stay blurry forever;
+                // put it back in the queue so the spread is always either ready or on its way.
+                if (firstState == null || secondState == null) {
+                    if (firstState == null) promoteEnhancementRequest(highPriority = true)
+                    if (secondState == null) enqueueSecondPageEnhancement(second)
+                    if (firstState == null) {
+                        firstState = pageWaitState(mId, cId, page.index, page.enhancementKeySuffix, configHash)
+                    }
+                    if (secondState == null) {
+                        secondState = pageWaitState(mId, cId, second.index, second.enhancementKeySuffix, configHash)
                     }
                 }
-                val firstDone = ImageEnhancementCache.getCachedImage(mId, cId, page.index, configHash, page.enhancementKeySuffix) != null ||
-                    ImageEnhancementCache.isSkipped(mId, cId, page.index, configHash, page.enhancementKeySuffix) ||
-                    ImageEnhancementCache.isFailed(mId, cId, page.index, configHash, page.enhancementKeySuffix)
-                val secondDone = ImageEnhancementCache.getCachedImage(mId, cId, second.index, configHash, second.enhancementKeySuffix) != null ||
-                    ImageEnhancementCache.isSkipped(mId, cId, second.index, configHash, second.enhancementKeySuffix) ||
-                    ImageEnhancementCache.isFailed(mId, cId, second.index, configHash, second.enhancementKeySuffix)
-                if (firstDone && secondDone) {
-                    // Both pages finished: hide the rows instead of leaving stale labels on screen.
-                    withUIContext { enhancementStatusContainer?.isVisible = false }
-                    return@launchIO
+
+                val states = listOfNotNull(firstState, secondState)
+                val waiting = states.any { it == PageWaitState.WORKING || it == PageWaitState.QUEUED }
+                val text = when {
+                    !waiting -> null
+                    states.contains(PageWaitState.WORKING) -> {
+                        val percent = Waifu2x.getProgressPercent()
+                        if (percent in 0..100) {
+                            context.stringResource(KMR.strings.reader_status_enhancing_progress, percent)
+                        } else {
+                            context.stringResource(KMR.strings.reader_status_enhancing)
+                        }
+                    }
+                    else -> context.stringResource(KMR.strings.reader_status_waiting)
                 }
+
+                val showStatus = readerPreferences.realCuganShowStatus().get()
+                withUIContext {
+                    if (text == null || !showStatus) {
+                        enhancementStatusContainer?.isVisible = false
+                    } else {
+                        statusView.text = text
+                        statusView.isVisible = true
+                        enhancementStatusContainer?.let {
+                            it.isVisible = true
+                            it.bringToFront()
+                        }
+                    }
+                }
+                if (text == null) return@launchIO
                 delay(500)
                 attempts++
             }
+            withUIContext { enhancementStatusContainer?.isVisible = false }
         }
     }
-
-    private fun computeEnhancementStatus(mId: Long, cId: Long, index: Int, variant: String, configHash: String): String {
-        return when {
-            ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null ->
-                context.stringResource(KMR.strings.reader_status_processed)
-            // KMK --> Encoding is the last step before the cache entry appears; without this the
-            // label flickers back to queued/raw for the duration of the save.
-            ImageEnhancementCache.isSavePending(mId, cId, index, variant) ->
-                context.stringResource(KMR.strings.reader_status_processed)
-            // KMK <--
-            ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant) ->
-                context.stringResource(KMR.strings.reader_status_raw)
-            ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant) ->
-                context.stringResource(KMR.strings.reader_status_raw)
-            Waifu2x.getProgressId() == index -> {
-                val rawProgress = Waifu2x.getProgressPercent()
-                if (rawProgress in 0..100) {
-                    context.stringResource(KMR.strings.reader_status_enhancing_progress, rawProgress)
-                } else {
-                    context.stringResource(KMR.strings.reader_status_enhancing) + ".".repeat(
-                        (rawProgress % 3).let { if (it < 0) -it else it } + 1,
-                    )
-                }
-            }
-            ImageEnhancer.hasRequest(mId, cId, index, variant) ->
-                context.stringResource(KMR.strings.reader_status_queued)
-            // KMK --> "处理中" was shown for a page that had no request at all, so the label kept
-            // flipping between queued/processing while nothing was happening.
-            else -> context.stringResource(KMR.strings.reader_status_raw)
-            // KMK <--
-        }
-    }
+    // KMK <--
 
     /**
      * A simple [TextView] that draws a black outline around its text so the status stays

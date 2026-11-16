@@ -274,6 +274,7 @@
     <string name="reader_status_processed">PROCESSED</string>
     <string name="reader_status_processing">PROCESSING</string>
     <string name="reader_status_queued">QUEUED</string>
+    <string name="reader_status_waiting">WAITING TO ENHANCE…</string>
     <string name="reader_status_finishing">FINISHING...</string>
     <string name="reader_status_enhancing">ENHANCING</string>
     <string name="reader_status_enhancing_progress">ENHANCING... %1$d%%</string>

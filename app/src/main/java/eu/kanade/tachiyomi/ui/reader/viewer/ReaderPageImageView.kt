@@ -559,11 +559,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
         transformedSource: BufferedSource? = null,
     ) {
         val uriString = file.toURI().toString()
-        updateStatus(context.stringResource(KMR.strings.reader_status_processed))
+        updateStatus(null)
 
         if (suppressSinglePageProcessedSwap && transformedSource == null) {
             // Double-page merge: a single enhanced page must never replace the raw merged view.
-            updateStatus(context.stringResource(KMR.strings.reader_status_processing))
+            updateStatus(context.stringResource(KMR.strings.reader_status_waiting))
             return
         }
 
@@ -776,7 +776,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             enhancedBitmap?.recycle()
             enhancedBitmap = null
             isSettingProcessedImage = false
-            updateStatus(context.stringResource(KMR.strings.reader_status_processing))
+            updateStatus(context.stringResource(KMR.strings.reader_status_waiting))
         }
 
         requeueEnhancement(mId, cId, pIdx, triggerData, streamFn, forceCurrentPage)
@@ -855,16 +855,16 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             }
                         }
                     } else {
-                        updateStatus(context.stringResource(KMR.strings.reader_status_processed))
+                        updateStatus(null)
                     }
                 } else if (
                     ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
                     ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
                 ) {
-                    updateStatus(context.stringResource(KMR.strings.reader_status_raw))
+                    updateStatus(null)
                 } else {
                     // Not in cache, not skipped - ensure it's being processed with high priority
-                    updateStatus(context.stringResource(KMR.strings.reader_status_processing))
+                    updateStatus(context.stringResource(KMR.strings.reader_status_waiting))
                     enqueueEnhancement(mId, cId, pIdx, highPriority = true)
 
                     // Start/restart polling if not already running
@@ -1177,7 +1177,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
         originalData: Any? = null,
     ) {
         if (isSettingProcessedImage || !realCuganEnabled) {
-            updateStatus(if (realCuganEnabled) null else context.stringResource(KMR.strings.reader_status_raw))
+            // Nothing to wait for in either case; the "RAW" label told the reader nothing.
+            updateStatus(null)
             return
         }
 
@@ -1227,7 +1228,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     setImage(ImageSource.uri(context, uri))
                     currentLoadedUri = cachedFile.toURI().toString()
                     isVisible = true
-                    updateStatus(context.stringResource(KMR.strings.reader_status_processed))
+                    updateStatus(null)
                 } else {
                     viewScope.launchIO {
                         healInvalidEnhancedCache(
@@ -1251,7 +1252,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
         ) {
             logcat(LogPriority.DEBUG) { "ReaderPageImageView: Page $pIdx marked as skipped/failed, showing RAW" }
-            updateStatus(context.stringResource(KMR.strings.reader_status_raw))
+            updateStatus(null)
             return
         }
 
@@ -1311,7 +1312,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant) ||
                         ImageEnhancementCache.isFailed(mId, cId, pIdx, configHash, pageVariant)
                     ) {
-                        withUIContext { updateStatus(context.stringResource(KMR.strings.reader_status_raw)) }
+                        withUIContext { updateStatus(null) }
                         return@launchIO
                     }
                     val file = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
@@ -1369,7 +1370,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         }
                     } else if (ImageEnhancer.hasRequest(mId, cId, pIdx, pageVariant)) {
                         if (!wasEnhancing) {
-                            updateStatus(context.stringResource(KMR.strings.reader_status_queued))
+                            updateStatus(context.stringResource(KMR.strings.reader_status_waiting))
                         } else {
                             updateStatus(context.stringResource(KMR.strings.reader_status_finishing))
                         }
@@ -1394,12 +1395,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             )
                             if (!requeued) {
                                 // No usable source for this page: stop polling instead of retrying.
-                                updateStatus(context.stringResource(KMR.strings.reader_status_raw))
+                                updateStatus(null)
                                 delay(2000)
                                 return@launchIO
                             }
                         } else {
-                            updateStatus(context.stringResource(KMR.strings.reader_status_raw))
+                            updateStatus(null)
                             delay(2000)
                             return@launchIO
                         }
