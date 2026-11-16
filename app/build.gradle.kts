@@ -47,8 +47,8 @@ android {
     defaultConfig {
         applicationId = "app.komikku"
 
-        versionCode = 103
-        versionName = "1.0.3"
+        versionCode = 104
+        versionName = "1.0.4"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getCommitCount()}\"")
         buildConfigField("String", "COMMIT_SHA", "\"${getGitSha()}\"")
@@ -400,4 +400,3 @@ buildscript {
         classpath(kotlinx.gradle)
     }
 }
-

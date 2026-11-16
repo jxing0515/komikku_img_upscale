@@ -317,7 +317,8 @@ class PagerPageHolder(
             mangaId = mId,
             chapterId = cId,
             pageIndex = target.index,
-            highPriority = false,
+            // The visible spread must not wait behind preloads, otherwise its page sits on 排队中.
+            highPriority = ImageEnhancer.isFocusedTarget(target.index, target.enhancementKeySuffix),
             pageVariant = target.enhancementKeySuffix,
         ) {
             try {
@@ -472,7 +473,8 @@ class PagerPageHolder(
                     ImageEnhancementCache.isSkipped(mId, cId, second.index, configHash, second.enhancementKeySuffix) ||
                     ImageEnhancementCache.isFailed(mId, cId, second.index, configHash, second.enhancementKeySuffix)
                 if (firstDone && secondDone) {
-                    // Both pages finished: keep showing the final status (no stay delay, no hide).
+                    // Both pages finished: hide the rows instead of leaving stale labels on screen.
+                    withUIContext { enhancementStatusContainer?.isVisible = false }
                     return@launchIO
                 }
                 delay(500)
@@ -485,6 +487,11 @@ class PagerPageHolder(
         return when {
             ImageEnhancementCache.getCachedImage(mId, cId, index, configHash, variant) != null ->
                 context.stringResource(KMR.strings.reader_status_processed)
+            // KMK --> Encoding is the last step before the cache entry appears; without this the
+            // label flickers back to queued/raw for the duration of the save.
+            ImageEnhancementCache.isSavePending(mId, cId, index, variant) ->
+                context.stringResource(KMR.strings.reader_status_processed)
+            // KMK <--
             ImageEnhancementCache.isSkipped(mId, cId, index, configHash, variant) ->
                 context.stringResource(KMR.strings.reader_status_raw)
             ImageEnhancementCache.isFailed(mId, cId, index, configHash, variant) ->
@@ -501,7 +508,10 @@ class PagerPageHolder(
             }
             ImageEnhancer.hasRequest(mId, cId, index, variant) ->
                 context.stringResource(KMR.strings.reader_status_queued)
-            else -> context.stringResource(KMR.strings.reader_status_processing)
+            // KMK --> "处理中" was shown for a page that had no request at all, so the label kept
+            // flipping between queued/processing while nothing was happening.
+            else -> context.stringResource(KMR.strings.reader_status_raw)
+            // KMK <--
         }
     }
 
