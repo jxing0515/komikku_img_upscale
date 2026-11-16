@@ -102,6 +102,7 @@
     <string name="pref_panorama_cover_flow_summary">在全局搜索和建议中显示全景封面</string>
     <string name="pref_auto_sync_progress_from_trackers">从 Tracker 自动同步进度</string>
     <string name="sync_progress_from_trackers_up_to_chapter">从 Trackers 同步到第 %d 章</string>
+    <string name="sync_nothing_to_do">无需同步</string>
     <string name="option_label_library_update_errors">库更新错误</string>
     <string name="label_library_update_errors">库更新错误 (%d)</string>
     <string name="info_empty_library_update_errors">您没有库更新错误。</string>
@@ -246,8 +247,10 @@
     <string name="reader_status_processed">已处理</string>
     <string name="reader_status_processing">处理中</string>
     <string name="reader_status_queued">排队中</string>
+    <string name="reader_status_waiting">等待增强…</string>
     <string name="reader_status_finishing">即将完成…</string>
     <string name="reader_status_enhancing">增强中</string>
     <string name="reader_status_enhancing_progress">增强中… %1$d%%</string>
+    <string name="reader_status_failed">增强失败，点按重试</string>
     <string name="about_upstreams">上游仓库</string>
 </resources>
