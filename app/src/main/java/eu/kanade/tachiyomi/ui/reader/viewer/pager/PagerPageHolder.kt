@@ -293,10 +293,41 @@ class PagerPageHolder(
         enhancedImageSourceFactory = { firstFile ->
             buildDoublePageSource(firstFile)
         }
+        // The base class only ever enqueues the first half of a spread, so the second page was
+        // never enhanced and its status stayed on "处理中" forever.
+        enqueueSecondPageEnhancement(second)
         // The base view only tracks one page status; in double-page mode we show two rows ourselves.
         suppressDefaultStatus = true
         startEnhancementStatusTracking()
     }
+
+    // KMK -->
+    private fun enqueueSecondPageEnhancement(second: ReaderPage?) {
+        val target = second ?: return
+        if (!readerPreferences.realCuganEnabled().get()) return
+        val mId = page.chapter.chapter.manga_id ?: -1L
+        val cId = page.chapter.chapter.id ?: -1L
+        if (mId == -1L || cId == -1L) return
+        val configHash = enhancementConfigHash()
+        if (ImageEnhancementCache.getCachedImage(mId, cId, target.index, configHash, target.enhancementKeySuffix) != null) return
+        if (ImageEnhancementCache.isSkipped(mId, cId, target.index, configHash, target.enhancementKeySuffix)) return
+        if (ImageEnhancementCache.isFailed(mId, cId, target.index, configHash, target.enhancementKeySuffix)) return
+        ImageEnhancer.enhanceLazy(
+            context = context.applicationContext,
+            mangaId = mId,
+            chapterId = cId,
+            pageIndex = target.index,
+            highPriority = false,
+            pageVariant = target.enhancementKeySuffix,
+        ) {
+            try {
+                target.stream?.let { stream -> stream().use { Buffer().readFrom(it) } } ?: target.imageUrl
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+    // KMK <--
 
     /**
      * Builds the merged double-page source from the enhanced cache of both pages. Returns null
