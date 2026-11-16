@@ -41,9 +41,13 @@ object Waifu2x {
 
     @Volatile private var isW2xExInitialized = false
 
-    // KMK --> Serialises native processing against native teardown. Cancelling a request does not
-    // stop the JNI call, so a destroy() issued right after it frees Vulkan state the running call
-    // still uses and leaves the engine stuck at 0% forever.
+    // KMK --> Serialises *every* entry point into the native library: model load/destroy and the
+    // per-page process call. Cancelling a request does not stop the JNI call, so a destroy() issued
+    // right after it frees Vulkan state the running call still uses and leaves the engine stuck at
+    // 0% forever. Loading a model while another call is inside the OpenMP runtime is worse: the
+    // first parallel region initialises thread affinity lazily and asserts (__kmp_debug_assert ->
+    // __kmp_fatal) instead of returning an error, so the whole process aborts with SIGABRT.
+    // init*() used to take `this` while process/reset took this lock, which let both run at once.
     private val nativeLock = Any()
 
     private val nativeBusy = java.util.concurrent.atomic.AtomicInteger(0)
@@ -62,7 +66,7 @@ object Waifu2x {
     fun init(context: Context, noiseLevel: Int = 2, scale: Int = 2): Boolean {
         if (isInitialized) return true
 
-        return synchronized(this) {
+        return synchronized(nativeLock) {
             if (isInitialized) return true
 
             val modelDir = extractModelsToCache(context, "waifu2x-models")
@@ -126,7 +130,7 @@ object Waifu2x {
             return true
         }
 
-        return synchronized(this) {
+        return synchronized(nativeLock) {
             val currentConfig = RealCuganConfig(
                 effectiveNoiseLevel,
                 scale,
@@ -214,7 +218,7 @@ object Waifu2x {
         precision: Int = 0,
         fp16Arithmetic: Boolean = false,
         processingBackend: Int = PROCESSING_BACKEND_VULKAN,
-    ): Boolean = synchronized(this) {
+    ): Boolean = synchronized(nativeLock) {
         val isPhotoStyle = style == REAL_ESRGAN_STYLE_PHOTO
         val outputScale = if (isPhotoStyle) 2 else scale
         val resolvedBackend = resolveProcessingBackend(processingBackend, MODEL_REAL_ESRGAN_ANIME, outputScale)
@@ -290,7 +294,7 @@ object Waifu2x {
     private data class GenericModelConfig(val precision: Int, val fp16Arithmetic: Boolean)
     private var lastNoseConfig: GenericModelConfig? = null
 
-    fun initNose(context: Context, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+    fun initNose(context: Context, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(nativeLock) {
         val config = GenericModelConfig(precision.coerceIn(0, 3), fp16Arithmetic)
         if (lastNoseConfig != config) {
             isNoseInitialized = false
@@ -327,7 +331,7 @@ object Waifu2x {
     private data class Waifu2xConfig(val noise: Int, val scale: Int, val precision: Int, val fp16Arithmetic: Boolean)
     private var lastWaifu2xConfig: Waifu2xConfig? = null
 
-    fun initWaifu2x(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+    fun initWaifu2x(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(nativeLock) {
         val newConfig = Waifu2xConfig(noise, scale, precision.coerceIn(0, 3), fp16Arithmetic)
 
         // Force reinit if config changed
@@ -362,7 +366,7 @@ object Waifu2x {
         isWaifu2xInitialized
     }
 
-    fun initWaifu2xUpconv7(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+    fun initWaifu2xUpconv7(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(nativeLock) {
         val newConfig = Waifu2xConfig(noise, scale, precision.coerceIn(0, 3), fp16Arithmetic)
 
         // Force reinit if config changed
@@ -448,7 +452,7 @@ object Waifu2x {
         precision: Int = 0,
         fp16Arithmetic: Boolean = false,
         processingBackend: Int = PROCESSING_BACKEND_VULKAN,
-    ): Boolean = synchronized(this) {
+    ): Boolean = synchronized(nativeLock) {
         val selectedModel = w2xExModelFor(model) ?: return false
         val effectiveScale = selectedModel.scale
         val modelDir = extractModelsToCache(context, selectedModel.assetPath) ?: return false
@@ -511,27 +515,27 @@ object Waifu2x {
     // But check specific flags
     fun processRealESRGAN(input: Bitmap, id: Int = -1): Bitmap? {
         if (!isRealEsrganInitialized) return null
-        return processBitmapHelper(input, id)
+        return processBitmapHelper(input, id) { isRealEsrganInitialized }
     }
 
     fun processNose(input: Bitmap, id: Int = -1): Bitmap? {
         if (!isNoseInitialized) return null
-        return processBitmapHelper(input, id)
+        return processBitmapHelper(input, id) { isNoseInitialized }
     }
 
     fun processWaifu2x(input: Bitmap, id: Int = -1): Bitmap? {
         if (!isWaifu2xInitialized) return null
-        return processBitmapHelper(input, id)
+        return processBitmapHelper(input, id) { isWaifu2xInitialized }
     }
 
     fun processW2xEx(input: Bitmap, id: Int = -1): Bitmap? {
         if (!isW2xExInitialized) return null
-        return processBitmapHelper(input, id)
+        return processBitmapHelper(input, id) { isW2xExInitialized }
     }
 
     @Volatile var processingId: Int = -1
 
-    private fun processBitmapHelper(input: Bitmap, id: Int): Bitmap? {
+    private fun processBitmapHelper(input: Bitmap, id: Int, isModelReady: () -> Boolean): Bitmap? {
         if (input.isRecycled) return null
 
         val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
@@ -548,7 +552,14 @@ object Waifu2x {
         try {
             val result = nativeBusy.incrementAndGet().let {
                 try {
-                    synchronized(nativeLock) { nativeProcessRealCugan(argbBitmap, id) }
+                    synchronized(nativeLock) {
+                        // KMK --> The model can be torn down between the caller's flag check and
+                        // this call; re-check inside the monitor so a destroyed engine is never
+                        // entered.
+                        if (!isModelReady()) return null
+                        // KMK <--
+                        nativeProcessRealCugan(argbBitmap, id)
+                    }
                 } finally {
                     nativeBusy.decrementAndGet()
                 }
@@ -588,26 +599,35 @@ object Waifu2x {
      * Reset Real-CUGAN to allow re-initialization with new settings.
      */
     fun resetRealCugan() {
-        isInitialized = false
-        isRealCuganInitialized = false
-        isRealEsrganInitialized = false
-        isNoseInitialized = false
-        isWaifu2xInitialized = false
-        isAnime4kInitialized = false
-        isW2xExInitialized = false
-        lastRealCuganConfig = null
-        lastRealEsrganConfig = null
-        lastNoseConfig = null
-        lastWaifu2xConfig = null
-        lastW2xExConfig = null
-        synchronized(nativeLock) { nativeDestroy() }
+        // KMK --> One monitor for the flags and the native teardown: a reader thread must never
+        // observe "not initialised" while the engine is still being destroyed, and destroy() must
+        // never run while a page is being processed.
+        synchronized(nativeLock) {
+            isInitialized = false
+            isRealCuganInitialized = false
+            isRealEsrganInitialized = false
+            isNoseInitialized = false
+            isWaifu2xInitialized = false
+            isAnime4kInitialized = false
+            isW2xExInitialized = false
+            lastRealCuganConfig = null
+            lastRealEsrganConfig = null
+            lastNoseConfig = null
+            lastWaifu2xConfig = null
+            lastW2xExConfig = null
+            nativeDestroy()
+        }
+        // KMK <--
     }
 
     /**
      * Ask any active native upscaling operation to stop at its next cancellation check.
      */
     fun abortProcessing() {
+        // KMK --> Deliberately lock-free: this only raises the abort flag the native loop polls.
+        // Taking nativeLock here would queue behind the very call it is supposed to interrupt.
         nativeAbortProcessing()
+        // KMK <--
     }
 
     fun prepareProcessing() {
@@ -622,23 +642,27 @@ object Waifu2x {
      */
     fun processRealCugan(input: Bitmap, id: Int = -1): Bitmap? {
         if (!isRealCuganInitialized) return null
-        return processBitmapHelper(input, id)
+        return processBitmapHelper(input, id) { isRealCuganInitialized }
     }
 
     /**
      * Release native resources.
      */
     fun destroy() {
-        if (isInitialized || isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isAnime4kInitialized || isW2xExInitialized) {
-            nativeDestroy()
-            isInitialized = false
-            isRealCuganInitialized = false
-            isRealEsrganInitialized = false
-            isNoseInitialized = false
-            isWaifu2xInitialized = false
-            isAnime4kInitialized = false
-            isW2xExInitialized = false
+        // KMK --> Same monitor as every other native entry point (see nativeLock).
+        synchronized(nativeLock) {
+            if (isInitialized || isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isAnime4kInitialized || isW2xExInitialized) {
+                nativeDestroy()
+                isInitialized = false
+                isRealCuganInitialized = false
+                isRealEsrganInitialized = false
+                isNoseInitialized = false
+                isWaifu2xInitialized = false
+                isAnime4kInitialized = false
+                isW2xExInitialized = false
+            }
         }
+        // KMK <--
     }
 
     /**
