@@ -14,7 +14,34 @@ class SyncPreferences(
     fun clientAPIKey() = preferenceStore.getString("connection_sync_client_api_key", "")
     fun lastSyncTimestamp() = preferenceStore.getLong(Preference.appStateKey("last_sync_timestamp"), 0L)
 
-    fun lastSyncEtag() = preferenceStore.getString("sync_etag", "")
+    // KMK -->
+    /**
+     * Entity-tag of the remote backup, used for If-None-Match / If-Match.
+     *
+     * It lives under the app-state prefix because the backup payload carries every non-app-state
+     * preference: while this key was a plain one, the payload contained the ETag of the previous
+     * upload, so it differed from the remote on every sync. The content hash then concluded "the
+     * local side changed" and uploaded again, the upload returned a new ETag, and the next payload
+     * changed again - a self-feeding loop that made "no local change" behave like "always upload"
+     * (with a success toast and an advanced last-sync timestamp).
+     *
+     * The value itself must stay: uploading (A2) and the 412 conflict path (C) both read it.
+     */
+    fun lastSyncEtag(): Preference<String> {
+        val appState = preferenceStore.getString(Preference.appStateKey("sync_etag"), "")
+        // One-time migration for builds that wrote the plain (backed-up) key. The old value was
+        // only ever trusted when quoted, so the same rule applies here.
+        val legacy = preferenceStore.getString("sync_etag", "")
+        val legacyValue = legacy.get()
+        if (legacyValue.isNotEmpty()) {
+            if (appState.get().isEmpty() && legacyValue.startsWith("\"")) {
+                appState.set(legacyValue)
+            }
+            legacy.delete()
+        }
+        return appState
+    }
+    // KMK <--
 
     fun syncInterval() = preferenceStore.getInt("sync_interval", 0)
     fun syncService() = preferenceStore.getInt("sync_service", 0)
