@@ -65,14 +65,30 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
                     ?.getCoverStream()
             }
         }
-        val decoder = resources.sourceOrNull()?.use {
-            coverStream.use { coverStream ->
-                ImageDecoder.newInstance(coverStream ?: it.inputStream(), options.cropBorders, displayProfile)
+        // KMK --> A garbage source fails *here*, before any bitmap exists, so this is the branch
+        // that has to record the terminal marker: without it such a page has no terminal state and
+        // the reader re-enqueues it forever.
+        val decoder = try {
+            resources.sourceOrNull()?.use {
+                coverStream.use { coverStream ->
+                    ImageDecoder.newInstance(coverStream ?: it.inputStream(), options.cropBorders, displayProfile)
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            markUndecodableSourceAsFailed()
+            throw e
         }
+        // KMK <--
         // SY <--
 
-        check(decoder != null && decoder.width > 0 && decoder.height > 0) { "Failed to initialize decoder" }
+        if (decoder == null || decoder.width <= 0 || decoder.height <= 0) {
+            // KMK --> See above: an uninitialisable decoder is a terminal state too.
+            markUndecodableSourceAsFailed()
+            // KMK <--
+            error("Failed to initialize decoder")
+        }
 
         val srcWidth = decoder.width
         val srcHeight = decoder.height
@@ -91,8 +107,17 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
         // KMK -->
         // Serialize native decodes so enhancement (which uses a global native upscaler) never
         // races against concurrent decoding of other pages.
-        var bitmap = decodeSemaphore.withPermit {
-            decoder.decode(sampleSize = sampleSize)
+        var bitmap = try {
+            decodeSemaphore.withPermit {
+                decoder.decode(sampleSize = sampleSize)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // KMK --> Same terminal state as an uninitialisable decoder.
+            markUndecodableSourceAsFailed()
+            throw e
+            // KMK <--
         }
         // KMK <--
         decoder.recycle()
