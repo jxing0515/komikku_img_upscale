@@ -646,13 +646,11 @@ class PagerPageHolder(
 
                 val states = listOfNotNull(firstState, secondState)
                 val failed = states.any { it == PageWaitState.FAILED }
-                // KMK --> "Still moving" includes the cache encoder: a page that is being written
-                // has already been enhanced, so calling that moment "waiting" made one spread flicker
-                // back to "Waiting to enhance…" between 43% and 55%.
-                val progressing = states.any {
+                // KMK --> Something the reader is still waiting for. The three stages below decide
+                // *what* to say; none of them may print a number unless a page is being computed.
+                val waiting = states.any {
                     it == PageWaitState.WORKING || it == PageWaitState.QUEUED || it == PageWaitState.SAVING
                 }
-                val waiting = progressing
                 // KMK <--
                 // KMK --> Report the progress of the whole spread, not of whichever half happens to
                 // own the single native progress slot: page A ending at 82% and page B starting at
@@ -678,15 +676,19 @@ class PagerPageHolder(
                     failed -> context.stringResource(KMR.strings.reader_status_failed)
                     // KMK <--
                     !waiting -> null
-                    // KMK --> Anything that is already on its way shows the spread's progress. Only
-                    // a spread where both halves are queued and nothing has happened yet may say
-                    // "waiting", so one spread stays at two transitions: waiting -> enhancing ->
-                    // silence.
-                    states.contains(PageWaitState.WORKING) ||
-                        states.contains(PageWaitState.SAVING) ||
-                        doneCount > 0 -> {
+                    // KMK --> Three stages, one per thing the reader can actually be waiting for:
+                    //   WORKING -> a page is being computed, the number moves;
+                    //   SAVING  -> the enhancement is done and the result is being written, which has
+                    //              no measurable percentage (a big spread can spend tens of seconds
+                    //              here), so say the stage instead of parking a stale number;
+                    //   QUEUED  -> nothing is running yet, say so.
+                    // Printing the average progress while a page was only being saved froze the line
+                    // at 50% forever ("one of two done, nothing computing"), which readers read as
+                    // "half of this page is processed".
+                    states.contains(PageWaitState.WORKING) -> {
                         context.stringResource(KMR.strings.reader_status_enhancing_progress, shownPercent)
                     }
+                    states.contains(PageWaitState.SAVING) -> context.stringResource(KMR.strings.reader_status_finishing)
                     // KMK <--
                     else -> context.stringResource(KMR.strings.reader_status_waiting)
                 }
