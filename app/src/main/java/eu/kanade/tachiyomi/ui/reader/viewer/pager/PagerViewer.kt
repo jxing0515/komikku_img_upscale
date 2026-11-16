@@ -23,6 +23,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import uy.kohesive.injekt.injectLazy
 import kotlin.math.min
@@ -238,6 +239,18 @@ abstract class PagerViewer(
                 is ReaderPage -> {
                     val holder = getPageHolder(page)
                     val hasExtraPage = holder?.item?.second != null || (holder == null && pagePair.second != null)
+                    // KMK --> One line that ties the counter to what is on screen.
+                    logcat(LogPriority.DEBUG) {
+                        "PagerViewer: onPageChange position=$position page=${page.index} " +
+                            "pairSecond=${(pagePair.second as? ReaderPage)?.index} " +
+                            "holderSecond=${(holder?.item?.second as? ReaderPage)?.index} " +
+                            "hasExtraPage=$hasExtraPage " +
+                            "holders=" + pager.children.filterIsInstance<PagerPageHolder>().joinToString(
+                                prefix = "[",
+                                postfix = "]",
+                            ) { "${(it.item.first as? ReaderPage)?.index}/${(it.item.second as? ReaderPage)?.index}" }
+                    }
+                    // KMK <--
                     onReaderPageSelected(page, allowPreload, forward, hasExtraPage)
                 }
                 // KMK <--
@@ -343,7 +356,28 @@ abstract class PagerViewer(
         // Since we removed the listener while shifting,
         // Manually call onPageChange to update the UI
         onPageChange(pager.currentItem)
+        // KMK --> onPageChange() short-circuits when the page did not change, but the spread may
+        // well have: setJoinedItems() has just re-chunked it (shift / split / full page). Without
+        // this the counter keeps describing the old grouping, e.g. "1-2 / 30" over a single page.
+        onSpreadRechunked()
+        // KMK <--
     }
+
+    // KMK -->
+    /** Refreshes only the counter after the adapter re-chunked the visible spread. */
+    private fun onSpreadRechunked() {
+        val pagePair = adapter.joinedItems.getOrNull(pager.currentItem) ?: return
+        val page = pagePair.first as? ReaderPage ?: return
+        val holder = getPageHolder(page)
+        val hasExtraPage = holder?.item?.second != null || (holder == null && pagePair.second != null)
+        logcat(LogPriority.DEBUG) {
+            "PagerViewer: spread re-chunked position=${pager.currentItem} page=${page.index} " +
+                "pairSecond=${(pagePair.second as? ReaderPage)?.index} " +
+                "holderSecond=${(holder?.item?.second as? ReaderPage)?.index} hasExtraPage=$hasExtraPage"
+        }
+        activity.onSpreadChanged(page, hasExtraPage)
+    }
+    // KMK <--
 
     /**
      * Tells this viewer to move to the given [page].

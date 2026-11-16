@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.calculateChapterGap
 import eu.kanade.tachiyomi.util.system.createReaderThemeContext
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.delay
+import logcat.LogPriority
 import tachiyomi.core.common.util.lang.launchUI
 import tachiyomi.core.common.util.system.logcat
 
@@ -154,6 +155,13 @@ class PagerViewerAdapter(
     override fun createView(container: ViewGroup, position: Int): View {
         val item = joinedItems[position].first
         val item2 = joinedItems[position].second
+        // KMK --> Which holder a position actually gets. A reader that says "1-2 / 30" over one
+        // page needs this line to tell a missing pair apart from a stale holder.
+        logcat(LogPriority.DEBUG) {
+            "PagerViewerAdapter: createView position=$position item=${(item as? ReaderPage)?.index} " +
+                "item2=${(item2 as? ReaderPage)?.index}"
+        }
+        // KMK <--
         return when (item) {
             is ReaderPage -> PagerPageHolder(
                 readerThemedContext,
@@ -343,6 +351,17 @@ class PagerViewerAdapter(
             }
 
             this.joinedItems = subJoinedItems
+            // KMK --> One line that answers "why does the first spread hold one page": the grouping
+            // flags and the first pairs of the list that was actually built.
+            logcat(LogPriority.DEBUG) {
+                "PagerViewerAdapter: joinedItems shiftDoublePage=${viewer.config.shiftDoublePage} " +
+                    "pageToShift=${pageToShift?.index} count=${subJoinedItems.size} " +
+                    "head=" + subJoinedItems.take(4).joinToString(prefix = "[", postfix = "]") {
+                        "${(it.first as? ReaderPage)?.index ?: it.first.javaClass.simpleName}" +
+                            "/${(it.second as? ReaderPage)?.index}"
+                    }
+            }
+            // KMK <--
         }
         notifyDataSetChanged()
 

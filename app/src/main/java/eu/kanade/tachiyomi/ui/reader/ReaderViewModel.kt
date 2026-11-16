@@ -668,6 +668,16 @@ class ReaderViewModel @JvmOverloads constructor(
         }
     }
 
+    // KMK -->
+    /**
+     * Updates only the page counter. Used when the adapter re-chunked the spread without the current
+     * page changing, so the counter stops describing the previous grouping.
+     */
+    fun setCurrentPageText(currentPageText: String) {
+        mutableState.update { it.copy(currentPageText = currentPageText) }
+    }
+    // KMK <--
+
     /**
      * Called every time a page changes on the reader. Used to mark the flag of chapters being
      * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this

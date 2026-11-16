@@ -1224,7 +1224,23 @@ class ReaderActivity : BaseActivity() {
      */
     fun onPageSelected(page: ReaderPage, hasExtraPage: Boolean = false) {
         // SY -->
-        val currentPageText = if (hasExtraPage) {
+        val currentPageText = pageIndicatorText(page, hasExtraPage)
+        // SY <--
+        viewModel.onPageSelected(page, /* SY --> */ currentPageText, hasExtraPage /* SY <-- */)
+    }
+
+    // KMK -->
+    /**
+     * Called when the adapter re-chunked the spread (shift / split / full page) without the current
+     * page changing. Only the counter is refreshed: the reading progress for this page is already
+     * recorded, and re-reporting it would write history again.
+     */
+    fun onSpreadChanged(page: ReaderPage, hasExtraPage: Boolean) {
+        viewModel.setCurrentPageText(pageIndicatorText(page, hasExtraPage))
+    }
+
+    private fun pageIndicatorText(page: ReaderPage, hasExtraPage: Boolean): String {
+        return if (hasExtraPage) {
             val invertDoublePage = (viewModel.state.value.viewer as? PagerViewer)?.config?.invertDoublePages ?: false
             if ((resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_LTR) xor
                 invertDoublePage
@@ -1236,9 +1252,8 @@ class ReaderActivity : BaseActivity() {
         } else {
             "${page.number}"
         }
-        // SY <--
-        viewModel.onPageSelected(page, /* SY --> */ currentPageText, hasExtraPage /* SY <-- */)
     }
+    // KMK <--
 
     /**
      * Called from the viewer whenever a [page] is long clicked. A bottom sheet with a list of
