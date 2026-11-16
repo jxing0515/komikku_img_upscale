@@ -28,6 +28,16 @@ abstract class SyncService(
 ) {
     abstract suspend fun doSync(syncData: SyncData): Backup?
 
+    // KMK -->
+    /**
+     * Set by a service that finished without transferring anything because the remote and the local
+     * backup already hold the same payload. The caller must not report this as "sync completed" nor
+     * advance the last-sync timestamp: nothing was uploaded or downloaded.
+     */
+    var skippedNoChange: Boolean = false
+        protected set
+    // KMK <--
+
     /**
      * Merges the local and remote sync data into a single JSON string.
      *

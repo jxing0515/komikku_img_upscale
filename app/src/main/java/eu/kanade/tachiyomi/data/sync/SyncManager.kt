@@ -166,6 +166,15 @@ class SyncManager(
             // KMK <--
         }
 
+        // KMK --> Nothing was transferred because remote and local already match. Reporting the
+        // normal "sync completed" here is what made a permanently read-only sync look healthy.
+        if (syncService.skippedNoChange) {
+            logcat(LogPriority.DEBUG) { "Nothing to sync: remote and local payload are identical" }
+            notifier.showSyncUpToDate("Already up to date, nothing to upload")
+            return true
+        }
+        // KMK <--
+
         if (remoteBackup === syncData.backup) {
             // nothing changed
             logcat(LogPriority.DEBUG) { "Skip restore due to remote was overwrite from local" }

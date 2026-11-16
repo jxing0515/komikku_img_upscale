@@ -107,10 +107,33 @@ class WebDavSyncService(
             // KMK <--
             val (remoteData, etag) = pullSyncData()
 
-            // KMK --> 304 means the remote file is unchanged, NOT that it is missing. Treating it
-            // as "no remote data" overwrote the server backup with the local one.
+            // KMK --> 304 means the remote file is unchanged, NOT that it is missing: treating it
+            // as "no remote data" overwrote the server backup with the local one. Skipping the
+            // upload unconditionally is just as wrong, because after the first successful PUT the
+            // remote never changes again, so every later local edit would stay on the device.
+            // Decide by payload instead: if what the remote holds is what we would upload there is
+            // genuinely nothing to do, otherwise push it back under If-Match so that a concurrent
+            // change from another device still fails with 412 instead of being overwritten.
             if (remoteData == null && etag.isNotEmpty()) {
-                xLogD("Remote unchanged (304), skipping upload")
+                val localBytes = syncData.backup?.let { encodeBackup(it) }
+                    ?: throw IllegalStateException(context.stringResource(MR.strings.empty_backup_error))
+                val localHash = sha256(localBytes)
+                val knownHash = syncPreferences.lastSyncContentHash().get()
+                val remoteHoldsLocalPayload = when {
+                    // Nothing but a conditional GET happened, so this is the cheap normal path.
+                    knownHash.isNotEmpty() -> knownHash == localHash
+                    // No hash recorded yet (first sync after upgrading): read the remote payload
+                    // once, so the first 304 does not turn into a pointless upload.
+                    else -> fetchRemoteBackupBytes()?.let { sha256(it) == localHash } ?: false
+                }
+                if (remoteHoldsLocalPayload) {
+                    syncPreferences.lastSyncContentHash().set(localHash)
+                    skippedNoChange = true
+                    xLogD("Remote and local payload are identical (304), nothing to upload")
+                    return syncData.backup
+                }
+                xLogD("Remote unchanged (304) but the local payload differs, updating with ETag(%s)", etag)
+                pushSyncData(syncData, etag, localBytes)
                 return syncData.backup
             }
             // KMK <--
@@ -124,7 +147,9 @@ class WebDavSyncService(
                 syncData
             }
 
-            pushSyncData(finalSyncData, etag)
+            val payload = finalSyncData.backup?.let { encodeBackup(it) }
+                ?: throw IllegalStateException(context.stringResource(MR.strings.empty_backup_error))
+            pushSyncData(finalSyncData, etag, payload)
             return finalSyncData.backup
         } catch (e: Exception) {
             xLogE("WebDAV sync error:", e)
@@ -132,6 +157,35 @@ class WebDavSyncService(
             return null
         }
     }
+
+    // KMK -->
+    private fun encodeBackup(backup: Backup): ByteArray {
+        val byteArray = protoBuf.encodeToByteArray(Backup.serializer(), backup)
+        if (byteArray.isEmpty()) throw IllegalStateException(context.stringResource(MR.strings.empty_backup_error))
+        return byteArray
+    }
+
+    private fun sha256(bytes: ByteArray): String {
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Reads the remote payload without any conditional header. Only used when a 304 arrives while
+     * no content hash is recorded yet; it never writes to the server.
+     */
+    private suspend fun fetchRemoteBackupBytes(): ByteArray? {
+        if (!validateSettings()) return null
+        val headers = Headers.Builder().add("Authorization", credentials).build()
+        val response = client.newCall(GET(buildWebDavFileUrl(), headers = headers)).await()
+        return when {
+            response.code == HttpStatus.SC_NOT_FOUND -> null
+            response.isSuccessful -> response.body.byteStream().use { it.readBytes() }
+            else -> null
+        }
+    }
+    // KMK <--
 
     private suspend fun pullSyncData(): Pair<SyncData?, String> {
         if (!validateSettings()) return Pair(null, "")
@@ -170,12 +224,11 @@ class WebDavSyncService(
         }
     }
 
-    private suspend fun pushSyncData(syncData: SyncData, eTag: String) {
+    private suspend fun pushSyncData(syncData: SyncData, eTag: String, byteArray: ByteArray) {
         val backup = syncData.backup ?: return
 
         if (!validateSettings()) return
 
-        val byteArray = protoBuf.encodeToByteArray(Backup.serializer(), backup)
         if (byteArray.isEmpty()) throw IllegalStateException(context.stringResource(MR.strings.empty_backup_error))
 
         val body = byteArray.toRequestBody("application/octet-stream".toMediaType())
@@ -192,6 +245,10 @@ class WebDavSyncService(
                 val newETag = response.headers["ETag"] ?: ""
                 // KMK <--
                 if (newETag.isNotEmpty()) syncPreferences.lastSyncEtag().set(newETag)
+                // KMK --> The remote now holds exactly these bytes; that is what a later 304 is
+                // compared against.
+                syncPreferences.lastSyncContentHash().set(sha256(byteArray))
+                // KMK <--
                 xLogI("WebDAV sync completed")
             }
             response.code == HttpStatus.SC_PRECONDITION_FAILED -> {

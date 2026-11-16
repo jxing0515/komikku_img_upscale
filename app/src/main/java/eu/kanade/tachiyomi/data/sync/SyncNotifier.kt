@@ -12,6 +12,8 @@ import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.util.system.cancelNotification
 import eu.kanade.tachiyomi.util.system.notificationBuilder
 import eu.kanade.tachiyomi.util.system.notify
+import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
@@ -104,4 +106,21 @@ class SyncNotifier(private val context: Context) {
             show(Notifications.ID_SYNC_COMPLETE)
         }
     }
+
+    // KMK -->
+    /**
+     * Remote and local already hold the same payload. This is not "sync completed": nothing was
+     * uploaded and the last-sync timestamp is left alone, so it must not borrow the success title.
+     */
+    fun showSyncUpToDate(message: String?) {
+        context.cancelNotification(Notifications.ID_SYNC_PROGRESS)
+
+        with(completeNotificationBuilder) {
+            setContentTitle(context.stringResource(KMR.strings.sync_nothing_to_do))
+            setContentText(message)
+
+            show(Notifications.ID_SYNC_COMPLETE)
+        }
+    }
+    // KMK <--
 }

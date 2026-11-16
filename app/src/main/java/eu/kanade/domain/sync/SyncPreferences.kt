@@ -24,6 +24,14 @@ class SyncPreferences(
     fun webDavUsername() = preferenceStore.getString("connection_webdav_username", "")
     fun webDavPassword() = preferenceStore.getString("connection_webdav_password", "")
     fun webDavFolder() = preferenceStore.getString("connection_webdav_folder", "komikku")
+
+    /**
+     * SHA-256 of the backup payload that the remote file is known to hold (i.e. the payload of the
+     * last successful upload, or the payload matched by a conditional GET). A 304 only proves the
+     * remote did not change; comparing the freshly built local payload against this hash is what
+     * tells us whether there is anything left to upload.
+     */
+    fun lastSyncContentHash() = preferenceStore.getString(Preference.appStateKey("sync_content_hash"), "")
     // KMK <--
 
     fun googleDriveAccessToken() = preferenceStore.getString(
