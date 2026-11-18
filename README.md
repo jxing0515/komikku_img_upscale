@@ -14,6 +14,7 @@
 > - Kotlin 封装: `app/src/main/java/eu/kanade/tachiyomi/util/waifu2x/` 与 `util/image/`
 > - 阅读器增强设置页、底部可开关的增强按钮、优先级调度(当前页优先、丢弃过期预载)
 > - 已移除高通 NPU(QNN)后端,统一使用 Vulkan GPU
+> - **独立版本线 v1.0.0 → v1.0.8(7 个 tag)**:双页/跨页增强后重新合并(中缝间距恒定)、spread 状态机与页计数一致性修复、失败页作为终态记录、中文本地化补全
 
 ---
 
